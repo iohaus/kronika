@@ -21,8 +21,12 @@ _URN_C = _urn("mart_billing")
 _URN_D = _urn("mart_demographics")
 
 _EDGE_AB = LineageEdge(src=_URN_A, dst=_URN_B, kind=EdgeKind.IDENTITY, columns=None)
-_EDGE_BC = LineageEdge(src=_URN_B, dst=_URN_C, kind=EdgeKind.PROJECTION, columns=frozenset({"billing_amount"}))
-_EDGE_BD = LineageEdge(src=_URN_B, dst=_URN_D, kind=EdgeKind.PROJECTION, columns=frozenset({"patient_id"}))
+_EDGE_BC = LineageEdge(
+    src=_URN_B, dst=_URN_C, kind=EdgeKind.PROJECTION, columns=frozenset({"billing_amount"})
+)
+_EDGE_BD = LineageEdge(
+    src=_URN_B, dst=_URN_D, kind=EdgeKind.PROJECTION, columns=frozenset({"patient_id"})
+)
 
 
 def _assets(*names: str) -> list[DataAsset]:
@@ -215,7 +219,13 @@ def valid_dag_context(draw: st.DrawFn) -> DataContext:
         for j in range(n)
         if levels[_urn(names[i])] < levels[_urn(names[j])]
     ]
-    chosen = draw(st.lists(st.sampled_from(possible_edges) if possible_edges else st.nothing(), max_size=min(len(possible_edges), 20), unique=True))
+    chosen = draw(
+        st.lists(
+            st.sampled_from(possible_edges) if possible_edges else st.nothing(),
+            max_size=min(len(possible_edges), 20),
+            unique=True,
+        )
+    )
     edges = [LineageEdge(src, dst, EdgeKind.IDENTITY, None) for src, dst in chosen]
 
     return DataContext.build(assets=assets, edges=edges, rules=[])

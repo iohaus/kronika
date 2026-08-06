@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from kronika.check.audit import DataAudit
 from kronika.data_context import DataContext
 from kronika.dimensions import Dimension, StatusLevel
-from kronika.impact import ImpactEngine, ImpactResult, _column_relevant, _propagate_one_dim
+from kronika.impact import ImpactEngine, _column_relevant, _propagate_one_dim
 from kronika.types import DataAsset, EdgeKind, EventKind, LineageEdge, MetadataEvent
 
 _P = "urn:li:dataPlatform:hive"
@@ -37,7 +36,9 @@ def _event(
     )
 
 
-def _edge(src: str, dst: str, kind: EdgeKind = EdgeKind.IDENTITY, columns: frozenset[str] | None = None) -> LineageEdge:
+def _edge(
+    src: str, dst: str, kind: EdgeKind = EdgeKind.IDENTITY, columns: frozenset[str] | None = None
+) -> LineageEdge:
     return LineageEdge(src=_urn(src), dst=_urn(dst), kind=kind, columns=columns)
 
 
@@ -60,8 +61,18 @@ def _healthcare_context() -> DataContext:
         ],
         edges=[
             _edge("raw_patients", "staging_patients", EdgeKind.IDENTITY),
-            _edge("staging_patients", "mart_billing", EdgeKind.PROJECTION, frozenset({"billing_amount"})),
-            _edge("staging_patients", "mart_demographics", EdgeKind.PROJECTION, frozenset({"patient_id"})),
+            _edge(
+                "staging_patients",
+                "mart_billing",
+                EdgeKind.PROJECTION,
+                frozenset({"billing_amount"}),
+            ),
+            _edge(
+                "staging_patients",
+                "mart_demographics",
+                EdgeKind.PROJECTION,
+                frozenset({"patient_id"}),
+            ),
         ],
         rules=[],
     )
@@ -81,82 +92,114 @@ class TestColumnRelevance:
         assert _column_relevant(frozenset({"col_a"}), frozenset({"col_b"})) is False
 
     def test_overlapping_is_relevant(self) -> None:
-        assert _column_relevant(frozenset({"col_a", "col_b"}), frozenset({"col_b", "col_c"})) is True
+        assert (
+            _column_relevant(frozenset({"col_a", "col_b"}), frozenset({"col_b", "col_c"})) is True
+        )
 
 
 class TestPropagateOneDim:
     def test_identity_inherit(self) -> None:
         result = _propagate_one_dim(
-            Dimension.INTEGRITY, EdgeKind.IDENTITY,
-            StatusLevel.CRITICAL, StatusLevel.HEALTHY,
-            None, None,
+            Dimension.INTEGRITY,
+            EdgeKind.IDENTITY,
+            StatusLevel.CRITICAL,
+            StatusLevel.HEALTHY,
+            None,
+            None,
         )
         assert result == StatusLevel.CRITICAL
 
     def test_identity_no_change_when_upstream_better(self) -> None:
         result = _propagate_one_dim(
-            Dimension.INTEGRITY, EdgeKind.IDENTITY,
-            StatusLevel.HEALTHY, StatusLevel.DEGRADED,
-            None, None,
+            Dimension.INTEGRITY,
+            EdgeKind.IDENTITY,
+            StatusLevel.HEALTHY,
+            StatusLevel.DEGRADED,
+            None,
+            None,
         )
         assert result == StatusLevel.DEGRADED
 
     def test_projection_col_filter_match(self) -> None:
         result = _propagate_one_dim(
-            Dimension.INTEGRITY, EdgeKind.PROJECTION,
-            StatusLevel.CRITICAL, StatusLevel.HEALTHY,
-            frozenset({"billing_amount"}), frozenset({"billing_amount"}),
+            Dimension.INTEGRITY,
+            EdgeKind.PROJECTION,
+            StatusLevel.CRITICAL,
+            StatusLevel.HEALTHY,
+            frozenset({"billing_amount"}),
+            frozenset({"billing_amount"}),
         )
         assert result == StatusLevel.CRITICAL
 
     def test_projection_col_filter_no_match(self) -> None:
         result = _propagate_one_dim(
-            Dimension.INTEGRITY, EdgeKind.PROJECTION,
-            StatusLevel.CRITICAL, StatusLevel.HEALTHY,
-            frozenset({"billing_amount"}), frozenset({"patient_id"}),
+            Dimension.INTEGRITY,
+            EdgeKind.PROJECTION,
+            StatusLevel.CRITICAL,
+            StatusLevel.HEALTHY,
+            frozenset({"billing_amount"}),
+            frozenset({"patient_id"}),
         )
         from kronika.impact import _NO_CHANGE
+
         assert result is _NO_CHANGE
 
     def test_aggregation_caps_critical_to_degraded(self) -> None:
         result = _propagate_one_dim(
-            Dimension.INTEGRITY, EdgeKind.AGGREGATION,
-            StatusLevel.CRITICAL, StatusLevel.HEALTHY,
-            None, None,
+            Dimension.INTEGRITY,
+            EdgeKind.AGGREGATION,
+            StatusLevel.CRITICAL,
+            StatusLevel.HEALTHY,
+            None,
+            None,
         )
         assert result == StatusLevel.DEGRADED
 
     def test_aggregation_degraded_stays_degraded(self) -> None:
         result = _propagate_one_dim(
-            Dimension.INTEGRITY, EdgeKind.AGGREGATION,
-            StatusLevel.DEGRADED, StatusLevel.HEALTHY,
-            None, None,
+            Dimension.INTEGRITY,
+            EdgeKind.AGGREGATION,
+            StatusLevel.DEGRADED,
+            StatusLevel.HEALTHY,
+            None,
+            None,
         )
         assert result == StatusLevel.DEGRADED
 
     def test_trust_aggregation_lower_by_one(self) -> None:
         result = _propagate_one_dim(
-            Dimension.TRUST, EdgeKind.AGGREGATION,
-            StatusLevel.HEALTHY, StatusLevel.HEALTHY,
-            None, None,
+            Dimension.TRUST,
+            EdgeKind.AGGREGATION,
+            StatusLevel.HEALTHY,
+            StatusLevel.HEALTHY,
+            None,
+            None,
         )
         assert result == StatusLevel.DEGRADED
 
     def test_ownership_no_prop(self) -> None:
         from kronika.impact import _NO_CHANGE
+
         result = _propagate_one_dim(
-            Dimension.OWNERSHIP, EdgeKind.IDENTITY,
-            StatusLevel.CRITICAL, StatusLevel.HEALTHY,
-            None, None,
+            Dimension.OWNERSHIP,
+            EdgeKind.IDENTITY,
+            StatusLevel.CRITICAL,
+            StatusLevel.HEALTHY,
+            None,
+            None,
         )
         assert result is _NO_CHANGE
 
     def test_compliance_recheck(self) -> None:
         from kronika.impact import _NO_CHANGE
+
         result = _propagate_one_dim(
-            Dimension.COMPLIANCE, EdgeKind.IDENTITY,
-            StatusLevel.CRITICAL, StatusLevel.HEALTHY,
-            None, None,
+            Dimension.COMPLIANCE,
+            EdgeKind.IDENTITY,
+            StatusLevel.CRITICAL,
+            StatusLevel.HEALTHY,
+            None,
+            None,
         )
         assert result is _NO_CHANGE
 
@@ -166,7 +209,9 @@ class TestImpactEngineLinear:
         ctx = DataContext.build(assets=[_asset("raw_patients")], edges=[], rules=[])
         _, result = _ENGINE.analyze(ctx, _event("raw_patients"))
         assert _URN_RAW in result.changed
-        assert result.changed[_URN_RAW].after.get_status(Dimension.INTEGRITY) == StatusLevel.CRITICAL
+        assert (
+            result.changed[_URN_RAW].after.get_status(Dimension.INTEGRITY) == StatusLevel.CRITICAL
+        )
 
     def test_propagates_downstream(self) -> None:
         ctx = DataContext.build(
@@ -186,9 +231,12 @@ class TestImpactEngineLinear:
     def test_freshness_event(self) -> None:
         ctx = DataContext.build(assets=[_asset("a")], edges=[], rules=[])
         evt = MetadataEvent(
-            event_id="e1", kind=EventKind.FRESHNESS_VIOLATION,
-            source_urn=_urn("a"), columns=None,
-            payload=(("severity", "expired"),), occurred_at="2026-07-25T10:00:00Z",
+            event_id="e1",
+            kind=EventKind.FRESHNESS_VIOLATION,
+            source_urn=_urn("a"),
+            columns=None,
+            payload=(("severity", "expired"),),
+            occurred_at="2026-07-25T10:00:00Z",
         )
         _, result = _ENGINE.analyze(ctx, evt)
         delta = result.changed[_urn("a")]
@@ -202,13 +250,19 @@ class TestImpactEngineLinear:
             rules=[],
         )
         evt = MetadataEvent(
-            event_id="e1", kind=EventKind.OWNERSHIP_CHANGE,
-            source_urn=_urn("a"), columns=None,
-            payload=(("new_ownership", "orphan"),), occurred_at="2026-07-25T10:00:00Z",
+            event_id="e1",
+            kind=EventKind.OWNERSHIP_CHANGE,
+            source_urn=_urn("a"),
+            columns=None,
+            payload=(("new_ownership", "orphan"),),
+            occurred_at="2026-07-25T10:00:00Z",
         )
         _, result = _ENGINE.analyze(ctx, evt)
-        assert _urn("b") not in result.changed or \
-            result.changed[_urn("b")].after.get_status(Dimension.OWNERSHIP) == StatusLevel.HEALTHY
+        assert (
+            _urn("b") not in result.changed
+            or result.changed[_urn("b")].after.get_status(Dimension.OWNERSHIP)
+            == StatusLevel.HEALTHY
+        )
 
 
 class TestImpactEngineColumnLevel:
@@ -219,9 +273,12 @@ class TestImpactEngineColumnLevel:
             rules=[],
         )
         evt = MetadataEvent(
-            event_id="e1", kind=EventKind.QUALITY_OBSERVATION,
-            source_urn=_urn("src"), columns=frozenset({"billing_amount"}),
-            payload=(), occurred_at="2026-07-25T10:00:00Z",
+            event_id="e1",
+            kind=EventKind.QUALITY_OBSERVATION,
+            source_urn=_urn("src"),
+            columns=frozenset({"billing_amount"}),
+            payload=(),
+            occurred_at="2026-07-25T10:00:00Z",
         )
         _, result = _ENGINE.analyze(ctx, evt)
         assert _urn("dst") in result.changed
@@ -233,9 +290,12 @@ class TestImpactEngineColumnLevel:
             rules=[],
         )
         evt = MetadataEvent(
-            event_id="e1", kind=EventKind.QUALITY_OBSERVATION,
-            source_urn=_urn("src"), columns=frozenset({"billing_amount"}),
-            payload=(), occurred_at="2026-07-25T10:00:00Z",
+            event_id="e1",
+            kind=EventKind.QUALITY_OBSERVATION,
+            source_urn=_urn("src"),
+            columns=frozenset({"billing_amount"}),
+            payload=(),
+            occurred_at="2026-07-25T10:00:00Z",
         )
         _, result = _ENGINE.analyze(ctx, evt)
         assert _urn("dst") not in result.changed
@@ -247,9 +307,12 @@ class TestImpactEngineColumnLevel:
             rules=[],
         )
         evt = MetadataEvent(
-            event_id="e1", kind=EventKind.QUALITY_OBSERVATION,
-            source_urn=_urn("src"), columns=frozenset({"billing_amount"}),
-            payload=(), occurred_at="2026-07-25T10:00:00Z",
+            event_id="e1",
+            kind=EventKind.QUALITY_OBSERVATION,
+            source_urn=_urn("src"),
+            columns=frozenset({"billing_amount"}),
+            payload=(),
+            occurred_at="2026-07-25T10:00:00Z",
         )
         _, result = _ENGINE.analyze(ctx, evt)
         assert _urn("dst") in result.changed
@@ -269,8 +332,12 @@ class TestImpactEngineDiamond:
             rules=[],
         )
         evt = MetadataEvent(
-            event_id="e1", kind=EventKind.QUALITY_OBSERVATION,
-            source_urn=a, columns=None, payload=(), occurred_at="2026-07-25T10:00:00Z",
+            event_id="e1",
+            kind=EventKind.QUALITY_OBSERVATION,
+            source_urn=a,
+            columns=None,
+            payload=(),
+            occurred_at="2026-07-25T10:00:00Z",
         )
         _, result = _ENGINE.analyze(ctx, evt)
         assert d in result.changed
@@ -289,8 +356,12 @@ class TestImpactEngineDiamond:
             rules=[],
         )
         evt = MetadataEvent(
-            event_id="e1", kind=EventKind.QUALITY_OBSERVATION,
-            source_urn=a, columns=None, payload=(), occurred_at="2026-07-25T10:00:00Z",
+            event_id="e1",
+            kind=EventKind.QUALITY_OBSERVATION,
+            source_urn=a,
+            columns=None,
+            payload=(),
+            occurred_at="2026-07-25T10:00:00Z",
         )
         _, result = _ENGINE.analyze(ctx, evt)
         assert d in result.changed
@@ -309,8 +380,12 @@ class TestImpactEngineCycleNode:
             rules=[],
         )
         evt = MetadataEvent(
-            event_id="e1", kind=EventKind.QUALITY_OBSERVATION,
-            source_urn=a, columns=None, payload=(), occurred_at="2026-07-25T10:00:00Z",
+            event_id="e1",
+            kind=EventKind.QUALITY_OBSERVATION,
+            source_urn=a,
+            columns=None,
+            payload=(),
+            occurred_at="2026-07-25T10:00:00Z",
         )
         _, result = _ENGINE.analyze(ctx, evt)
         assert a in result.changed
@@ -365,13 +440,17 @@ def acyclic_context_and_event(draw: st.DrawFn) -> tuple[DataContext, MetadataEve
 
     possible = [
         (names[i], names[j])
-        for i in range(n) for j in range(n)
+        for i in range(n)
+        for j in range(n)
         if levels[names[i]] < levels[names[j]]
     ]
-    chosen_pairs = draw(st.lists(
-        st.sampled_from(possible) if possible else st.nothing(),
-        max_size=min(len(possible), 15), unique=True,
-    ))
+    chosen_pairs = draw(
+        st.lists(
+            st.sampled_from(possible) if possible else st.nothing(),
+            max_size=min(len(possible), 15),
+            unique=True,
+        )
+    )
     edges = [LineageEdge(_urn(s), _urn(d), EdgeKind.IDENTITY, None) for s, d in chosen_pairs]
     ctx = DataContext.build(assets=assets, edges=edges, rules=[])
 
@@ -425,6 +504,7 @@ def test_property_source_always_in_changed(inputs: tuple[DataContext, MetadataEv
 @settings(max_examples=200)
 def test_property_changed_assets_are_reachable(inputs: tuple[DataContext, MetadataEvent]) -> None:
     from kronika.check.audit import ImpactEngine_reachable
+
     ctx, event = inputs
     _, result = _ENGINE.analyze(ctx, event)
     reachable = ImpactEngine_reachable(ctx, event.source_urn)

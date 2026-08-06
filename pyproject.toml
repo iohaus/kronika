@@ -7,8 +7,6 @@ name = "kronika"
 version = "0.1.0"
 requires-python = ">=3.12"
 description = "Autonomous metadata decision engine for DataHub"
-
-
 dependencies = []
 
 [project.optional-dependencies]
@@ -21,6 +19,7 @@ application = [
     "duckdb>=1.1",
     "networkx>=3.3",
     "openai>=1.40",
+    "acryl-datahub>=0.13.0",
 ]
 test = [
     "pytest>=8.3",
@@ -30,7 +29,7 @@ test = [
 ]
 dev = [
     "kronika[application,test]",
-    "ruff>=0.6",
+    "ruff>=0.8.0",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -41,7 +40,7 @@ packages = ["src/kronika", "src/application"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "ops"]
 asyncio_mode = "auto"
 
 [tool.ruff]
@@ -51,7 +50,6 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
-ignore = []
 
 [tool.importlinter]
 root_packages = ["kronika", "application"]

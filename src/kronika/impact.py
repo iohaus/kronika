@@ -14,38 +14,38 @@ _HEALTHY = StatusLevel.HEALTHY
 _NO_CHANGE = object()
 
 _PROP_MODES: dict[tuple[Dimension, EdgeKind], str] = {
-    (Dimension.INTEGRITY,     EdgeKind.IDENTITY):    "inherit",
-    (Dimension.INTEGRITY,     EdgeKind.PROJECTION):  "col_filter",
-    (Dimension.INTEGRITY,     EdgeKind.AGGREGATION): "agg_cap",
-    (Dimension.INTEGRITY,     EdgeKind.JOIN):        "inherit",
-    (Dimension.TRUST,         EdgeKind.IDENTITY):    "inherit",
-    (Dimension.TRUST,         EdgeKind.PROJECTION):  "col_filter",
-    (Dimension.TRUST,         EdgeKind.AGGREGATION): "lower1",
-    (Dimension.TRUST,         EdgeKind.JOIN):        "inherit",
-    (Dimension.AVAILABILITY,  EdgeKind.IDENTITY):    "inherit",
-    (Dimension.AVAILABILITY,  EdgeKind.PROJECTION):  "inherit",
-    (Dimension.AVAILABILITY,  EdgeKind.AGGREGATION): "inherit",
-    (Dimension.AVAILABILITY,  EdgeKind.JOIN):        "inherit",
-    (Dimension.COMPLIANCE,    EdgeKind.IDENTITY):    "recheck",
-    (Dimension.COMPLIANCE,    EdgeKind.PROJECTION):  "recheck",
-    (Dimension.COMPLIANCE,    EdgeKind.AGGREGATION): "recheck",
-    (Dimension.COMPLIANCE,    EdgeKind.JOIN):        "recheck",
-    (Dimension.FRESHNESS,     EdgeKind.IDENTITY):    "inherit",
-    (Dimension.FRESHNESS,     EdgeKind.PROJECTION):  "inherit",
-    (Dimension.FRESHNESS,     EdgeKind.AGGREGATION): "inherit",
-    (Dimension.FRESHNESS,     EdgeKind.JOIN):        "inherit",
-    (Dimension.OWNERSHIP,     EdgeKind.IDENTITY):    "no_prop",
-    (Dimension.OWNERSHIP,     EdgeKind.PROJECTION):  "no_prop",
-    (Dimension.OWNERSHIP,     EdgeKind.AGGREGATION): "no_prop",
-    (Dimension.OWNERSHIP,     EdgeKind.JOIN):        "no_prop",
-    (Dimension.DOCUMENTATION, EdgeKind.IDENTITY):    "no_prop",
-    (Dimension.DOCUMENTATION, EdgeKind.PROJECTION):  "no_prop",
+    (Dimension.INTEGRITY, EdgeKind.IDENTITY): "inherit",
+    (Dimension.INTEGRITY, EdgeKind.PROJECTION): "col_filter",
+    (Dimension.INTEGRITY, EdgeKind.AGGREGATION): "agg_cap",
+    (Dimension.INTEGRITY, EdgeKind.JOIN): "inherit",
+    (Dimension.TRUST, EdgeKind.IDENTITY): "inherit",
+    (Dimension.TRUST, EdgeKind.PROJECTION): "col_filter",
+    (Dimension.TRUST, EdgeKind.AGGREGATION): "lower1",
+    (Dimension.TRUST, EdgeKind.JOIN): "inherit",
+    (Dimension.AVAILABILITY, EdgeKind.IDENTITY): "inherit",
+    (Dimension.AVAILABILITY, EdgeKind.PROJECTION): "inherit",
+    (Dimension.AVAILABILITY, EdgeKind.AGGREGATION): "inherit",
+    (Dimension.AVAILABILITY, EdgeKind.JOIN): "inherit",
+    (Dimension.COMPLIANCE, EdgeKind.IDENTITY): "recheck",
+    (Dimension.COMPLIANCE, EdgeKind.PROJECTION): "recheck",
+    (Dimension.COMPLIANCE, EdgeKind.AGGREGATION): "recheck",
+    (Dimension.COMPLIANCE, EdgeKind.JOIN): "recheck",
+    (Dimension.FRESHNESS, EdgeKind.IDENTITY): "inherit",
+    (Dimension.FRESHNESS, EdgeKind.PROJECTION): "inherit",
+    (Dimension.FRESHNESS, EdgeKind.AGGREGATION): "inherit",
+    (Dimension.FRESHNESS, EdgeKind.JOIN): "inherit",
+    (Dimension.OWNERSHIP, EdgeKind.IDENTITY): "no_prop",
+    (Dimension.OWNERSHIP, EdgeKind.PROJECTION): "no_prop",
+    (Dimension.OWNERSHIP, EdgeKind.AGGREGATION): "no_prop",
+    (Dimension.OWNERSHIP, EdgeKind.JOIN): "no_prop",
+    (Dimension.DOCUMENTATION, EdgeKind.IDENTITY): "no_prop",
+    (Dimension.DOCUMENTATION, EdgeKind.PROJECTION): "no_prop",
     (Dimension.DOCUMENTATION, EdgeKind.AGGREGATION): "no_prop",
-    (Dimension.DOCUMENTATION, EdgeKind.JOIN):        "no_prop",
-    (Dimension.PRIVACY,       EdgeKind.IDENTITY):    "col_filter",
-    (Dimension.PRIVACY,       EdgeKind.PROJECTION):  "col_filter",
-    (Dimension.PRIVACY,       EdgeKind.AGGREGATION): "inherit",
-    (Dimension.PRIVACY,       EdgeKind.JOIN):        "inherit",
+    (Dimension.DOCUMENTATION, EdgeKind.JOIN): "no_prop",
+    (Dimension.PRIVACY, EdgeKind.IDENTITY): "col_filter",
+    (Dimension.PRIVACY, EdgeKind.PROJECTION): "col_filter",
+    (Dimension.PRIVACY, EdgeKind.AGGREGATION): "inherit",
+    (Dimension.PRIVACY, EdgeKind.JOIN): "inherit",
 }
 
 
@@ -94,11 +94,17 @@ def _apply_source_changes(asset: DataAsset, event: MetadataEvent) -> DataAsset:
     if k == EventKind.QUALITY_OBSERVATION:
         sev = event.payload_value("severity") or "critical"
         level = _CRITICAL if sev != "warning" else _DEGRADED
-        return asset.with_status(Dimension.INTEGRITY, worse_of(asset.get_status(Dimension.INTEGRITY), level))
+        return asset.with_status(
+            Dimension.INTEGRITY, worse_of(asset.get_status(Dimension.INTEGRITY), level)
+        )
 
     if k == EventKind.SCHEMA_CHANGE:
-        a = asset.with_status(Dimension.INTEGRITY, worse_of(asset.get_status(Dimension.INTEGRITY), _DEGRADED))
-        return a.with_status(Dimension.AVAILABILITY, worse_of(a.get_status(Dimension.AVAILABILITY), _DEGRADED))
+        a = asset.with_status(
+            Dimension.INTEGRITY, worse_of(asset.get_status(Dimension.INTEGRITY), _DEGRADED)
+        )
+        return a.with_status(
+            Dimension.AVAILABILITY, worse_of(a.get_status(Dimension.AVAILABILITY), _DEGRADED)
+        )
 
     if k == EventKind.OWNERSHIP_CHANGE:
         raw = event.payload_value("new_ownership") or ""
@@ -108,15 +114,23 @@ def _apply_source_changes(asset: DataAsset, event: MetadataEvent) -> DataAsset:
     if k == EventKind.PRIVACY_RECLASSIFICATION:
         raw = event.payload_value("classification") or ""
         level = _CRITICAL if raw == "exposed" else (_DEGRADED if raw == "unverified" else _HEALTHY)
-        a = asset.with_status(Dimension.PRIVACY, worse_of(asset.get_status(Dimension.PRIVACY), level))
-        return a.with_status(Dimension.COMPLIANCE, worse_of(a.get_status(Dimension.COMPLIANCE), _DEGRADED))
+        a = asset.with_status(
+            Dimension.PRIVACY, worse_of(asset.get_status(Dimension.PRIVACY), level)
+        )
+        return a.with_status(
+            Dimension.COMPLIANCE, worse_of(a.get_status(Dimension.COMPLIANCE), _DEGRADED)
+        )
 
     if k == EventKind.FRESHNESS_VIOLATION:
         raw = event.payload_value("severity") or "stale"
         level = _CRITICAL if raw == "expired" else _DEGRADED
-        a = asset.with_status(Dimension.FRESHNESS, worse_of(asset.get_status(Dimension.FRESHNESS), level))
+        a = asset.with_status(
+            Dimension.FRESHNESS, worse_of(asset.get_status(Dimension.FRESHNESS), level)
+        )
         if level == _CRITICAL:
-            a = a.with_status(Dimension.AVAILABILITY, worse_of(a.get_status(Dimension.AVAILABILITY), _DEGRADED))
+            a = a.with_status(
+                Dimension.AVAILABILITY, worse_of(a.get_status(Dimension.AVAILABILITY), _DEGRADED)
+            )
         return a
 
     return asset
@@ -145,7 +159,9 @@ class ImpactResult:
 
 
 class ImpactEngine:
-    def analyze(self, context: DataContext, event: MetadataEvent) -> tuple[DataContext, ImpactResult]:
+    def analyze(
+        self, context: DataContext, event: MetadataEvent
+    ) -> tuple[DataContext, ImpactResult]:
         source_urn = event.source_urn
 
         if source_urn in context.cycle_nodes:
@@ -180,17 +196,19 @@ class ImpactEngine:
 
                     for dim in Dimension:
                         new_level = _propagate_one_dim(
-                            dim, edge.kind,
+                            dim,
+                            edge.kind,
                             upstream.get_status(dim),
                             updated.get_status(dim),
-                            event.columns, edge.columns,
+                            event.columns,
+                            edge.columns,
                         )
                         if isinstance(new_level, StatusLevel):
                             updated = updated.with_status(dim, new_level)
 
                     src_path = evidence_paths.get(edge.src)
                     if src_path and len(src_path) + 1 > len(best_path):
-                        best_path = src_path + (urn,)
+                        best_path = (*src_path, urn)
 
                 working[urn] = updated
                 evidence_paths[urn] = best_path

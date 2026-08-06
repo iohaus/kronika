@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import pytest
-
 from kronika.data_context import DataContext
 from kronika.dimensions import Dimension, StatusLevel
-from kronika.evidence import EvidenceRecord, Recommendation, assemble
+from kronika.evidence import Recommendation, assemble
 from kronika.impact import ImpactEngine
 from kronika.rules import RuleEngine, RuleOutcome
 from kronika.types import DataAsset, EdgeKind, EventKind, LineageEdge, MetadataEvent, PolicyRule
@@ -48,7 +46,9 @@ def _healthcare_context() -> DataContext:
         ],
         edges=[
             LineageEdge(_URN_RAW, _URN_STAGING, EdgeKind.IDENTITY, None),
-            LineageEdge(_URN_STAGING, _URN_BILLING, EdgeKind.PROJECTION, frozenset({"billing_amount"})),
+            LineageEdge(
+                _URN_STAGING, _URN_BILLING, EdgeKind.PROJECTION, frozenset({"billing_amount"})
+            ),
             LineageEdge(_URN_STAGING, _URN_DEMO, EdgeKind.PROJECTION, frozenset({"patient_id"})),
         ],
         rules=[],
@@ -61,7 +61,9 @@ class TestHealthcareDemoScenario:
         self.after_ctx, self.impact = _ENGINE.analyze(self.ctx, _QUALITY_EVT)
         self.rule_results = _RULES.evaluate_all(self.after_ctx)
         self.record = assemble(
-            _QUALITY_EVT, self.impact, self.rule_results,
+            _QUALITY_EVT,
+            self.impact,
+            self.rule_results,
             consumer_counts={_URN_BILLING: 12, _URN_DEMO: 3},
         )
 
@@ -94,7 +96,10 @@ class TestHealthcareDemoScenario:
         assert self.record.event_id == "evt-001"
 
     def test_mart_billing_integrity_critical(self) -> None:
-        assert self.after_ctx.asset(_URN_BILLING).get_status(Dimension.INTEGRITY) == StatusLevel.CRITICAL
+        assert (
+            self.after_ctx.asset(_URN_BILLING).get_status(Dimension.INTEGRITY)
+            == StatusLevel.CRITICAL
+        )
 
     def test_staging_integrity_critical(self) -> None:
         staging_status = self.after_ctx.asset(_URN_STAGING).get_status(Dimension.INTEGRITY)
@@ -180,7 +185,9 @@ class TestRuleEngine:
     def test_has_upstream_predicate(self) -> None:
         ctx = DataContext.build(
             assets=[_asset("src"), _asset("dst")],
-            rules=[PolicyRule("r1", Dimension.OWNERSHIP, "asset.has_upstream()", _urn("dst"), None)],
+            rules=[
+                PolicyRule("r1", Dimension.OWNERSHIP, "asset.has_upstream()", _urn("dst"), None)
+            ],
             edges=[LineageEdge(_urn("src"), _urn("dst"), EdgeKind.IDENTITY, None)],
         )
         result = _RULES.evaluate(ctx.rules_for(_urn("dst"))[0], ctx.asset(_urn("dst")), ctx)

@@ -37,7 +37,7 @@ def _eval_predicate(predicate: str, asset: DataAsset, context: DataContext) -> b
         "asset": _AssetView(asset, context),
     }
     try:
-        result = eval(predicate, namespace)  # noqa: S307
+        result = eval(predicate, namespace)
         return bool(result) if isinstance(result, bool) else None
     except Exception:
         return None
@@ -47,10 +47,10 @@ def _build_evidence_path(urn: str, context: DataContext) -> tuple[str, ...]:
     path = [urn]
     preds = sorted(context.predecessors(urn))
     if preds:
-        path = [preds[0]] + path
+        path = [preds[0], *path]
     succs = sorted(context.successors(urn))
     if succs:
-        path = path + [succs[0]]
+        path = [*path, succs[0]]
     return tuple(path)
 
 

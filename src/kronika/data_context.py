@@ -127,5 +127,5 @@ class DataContext:
         rule_map = {r.rule_id: r for r in rules}
         if len(rule_map) != len(rules):
             raise ValidationError("context.rules", "duplicate rule_ids")
-        ctx =  DataContext(asset_map, frozenset(edges), rule_map)
+        ctx = DataContext(asset_map, frozenset(edges), rule_map)
         return ctx

@@ -53,10 +53,14 @@ class EvidenceRecord:
 def _asset_weight(tags: frozenset[str]) -> float:
     if "deprecated" in tags:
         return _DEPRECATED_WEIGHT
-    return max((_CRITICALITY_WEIGHTS.get(t, _DEFAULT_WEIGHT) for t in tags), default=_DEFAULT_WEIGHT)
+    return max(
+        (_CRITICALITY_WEIGHTS.get(t, _DEFAULT_WEIGHT) for t in tags), default=_DEFAULT_WEIGHT
+    )
 
 
-def _recommend(after_status: tuple[StatusLevel, ...], rule_results: list[RuleResult]) -> Recommendation:
+def _recommend(
+    after_status: tuple[StatusLevel, ...], rule_results: list[RuleResult]
+) -> Recommendation:
     has_critical_integrity = after_status[Dimension.INTEGRITY] == StatusLevel.CRITICAL
     has_violated_rule = any(r.outcome == RuleOutcome.VIOLATED for r in rule_results)
 
@@ -74,7 +78,9 @@ def _build_containment(
     outcomes: dict[str, AssetOutcome],
     consumer_counts: dict[str, int],
 ) -> ContainmentPlan:
-    halt_candidates = {urn for urn, o in outcomes.items() if o.recommendation == Recommendation.HALT}
+    halt_candidates = {
+        urn for urn, o in outcomes.items() if o.recommendation == Recommendation.HALT
+    }
 
     if not halt_candidates:
         return ContainmentPlan(
@@ -86,7 +92,7 @@ def _build_containment(
     def score(urn: str, tags: frozenset[str]) -> float:
         return _asset_weight(tags) * consumer_counts.get(urn, 0)
 
-    scored = sorted(
+    sorted(
         halt_candidates,
         key=lambda urn: (-score(urn, outcomes[urn].status_after[0:0] or frozenset()), urn),
     )

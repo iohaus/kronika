@@ -1,0 +1,8 @@
+module Kr
+singleton KrTheme 1.0 KrTheme.qml
+HeaderBar 1.0 HeaderBar.qml
+MetadataTopologyGraph 1.0 MetadataTopologyGraph.qml
+ReasoningPanel 1.0 ReasoningPanel.qml
+AssetInspector 1.0 AssetInspector.qml
+DecisionTimeline 1.0 DecisionTimeline.qml
+ActivityLog 1.0 ActivityLog.qml

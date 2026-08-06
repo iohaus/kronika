@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from kronika.dimensions import Dimension, StatusLevel, top
+from kronika.dimensions import Dimension, StatusLevel
 from kronika.types import (
     DataAsset,
     EdgeKind,

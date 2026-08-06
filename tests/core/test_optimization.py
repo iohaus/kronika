@@ -1,17 +1,14 @@
 from __future__ import annotations
 
-import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from kronika.data_context import DataContext
 from kronika.dimensions import Dimension, StatusLevel
 from kronika.optimization import (
-    ContainmentResult,
     _DEFAULT_WEIGHT,
     _asset_weight,
     _consumer_count,
-    _score,
     solve,
 )
 from kronika.types import DataAsset, EdgeKind, LineageEdge
@@ -86,7 +83,12 @@ class TestSolveEmpty:
 class TestSolveStar:
     def test_source_critical_all_downstream_covered(self) -> None:
         ctx = DataContext.build(
-            assets=[_critical("src", tags=frozenset({"critical"})), _asset("d1"), _asset("d2"), _asset("d3")],
+            assets=[
+                _critical("src", tags=frozenset({"critical"})),
+                _asset("d1"),
+                _asset("d2"),
+                _asset("d3"),
+            ],
             edges=[_edge("src", "d1"), _edge("src", "d2"), _edge("src", "d3")],
             rules=[],
         )
@@ -195,13 +197,18 @@ def acyclic_ctx_with_some_critical(draw: st.DrawFn) -> DataContext:
         assets.append(base)
 
     possible = [
-        (names[i], names[j]) for i in range(n) for j in range(n)
+        (names[i], names[j])
+        for i in range(n)
+        for j in range(n)
         if levels[names[i]] < levels[names[j]]
     ]
-    chosen = draw(st.lists(
-        st.sampled_from(possible) if possible else st.nothing(),
-        max_size=min(len(possible), 12), unique=True,
-    ))
+    chosen = draw(
+        st.lists(
+            st.sampled_from(possible) if possible else st.nothing(),
+            max_size=min(len(possible), 12),
+            unique=True,
+        )
+    )
     edges = [LineageEdge(_urn(s), _urn(d), EdgeKind.IDENTITY, None) for s, d in chosen]
     return DataContext.build(assets=assets, edges=edges, rules=[])
 
@@ -211,14 +218,15 @@ def acyclic_ctx_with_some_critical(draw: st.DrawFn) -> DataContext:
 def test_property_halt_set_only_contains_critical_or_ancestors(ctx: DataContext) -> None:
     result = solve(ctx)
     from kronika.optimization import _reachable_predecessors
+
     critical_urns = {
-        urn for urn in ctx.all_urns()
+        urn
+        for urn in ctx.all_urns()
         if ctx.asset(urn).get_status(Dimension.INTEGRITY) == StatusLevel.CRITICAL
     }
     for halted in result.halt_set:
         ancestors_of_any_critical = any(
-            halted in _reachable_predecessors(c, ctx) or halted == c
-            for c in critical_urns
+            halted in _reachable_predecessors(c, ctx) or halted == c for c in critical_urns
         )
         assert ancestors_of_any_critical, (
             f"{halted} is in halt_set but is not a critical asset or ancestor of one"
@@ -237,9 +245,11 @@ def test_property_solve_is_deterministic(ctx: DataContext) -> None:
 @settings(max_examples=200)
 def test_property_all_critical_covered(ctx: DataContext) -> None:
     from kronika.optimization import _reachable_predecessors
+
     result = solve(ctx)
     critical_urns = {
-        urn for urn in ctx.all_urns()
+        urn
+        for urn in ctx.all_urns()
         if ctx.asset(urn).get_status(Dimension.INTEGRITY) == StatusLevel.CRITICAL
     }
     for crit in critical_urns:

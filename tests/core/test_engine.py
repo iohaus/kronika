@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import pytest
-
 from kronika.data_context import DataContext
-from kronika.dimensions import Dimension, StatusLevel
+from kronika.dimensions import Dimension
 from kronika.engine import PublicEngine
 from kronika.evidence import Recommendation
-from kronika.ports import RecommendedAction
 from kronika.types import DataAsset, EdgeKind, EventKind, LineageEdge, MetadataEvent, PolicyRule
 
 _P = "urn:li:dataPlatform:hive"
@@ -50,7 +47,9 @@ def _healthcare_context() -> DataContext:
         ],
         edges=[
             LineageEdge(_URN_RAW, _URN_STAGING, EdgeKind.IDENTITY, None),
-            LineageEdge(_URN_STAGING, _URN_BILLING, EdgeKind.PROJECTION, frozenset({"billing_amount"})),
+            LineageEdge(
+                _URN_STAGING, _URN_BILLING, EdgeKind.PROJECTION, frozenset({"billing_amount"})
+            ),
             LineageEdge(_URN_STAGING, _URN_DEMO, EdgeKind.PROJECTION, frozenset({"patient_id"})),
         ],
         rules=[
@@ -133,16 +132,14 @@ class TestPublicEngineEndToEnd:
         autonomous = [a for a in actions if not a.requires_human_approval]
         new_ctx = self.engine.transition(autonomous)
         for action in autonomous:
-            if action.kind == "ADD_MONITORING_TAG":
-                if action.target_urn in new_ctx.all_urns():
-                    asset = new_ctx.asset(action.target_urn)
-                    assert "kronika:monitoring" in asset.tags
+            if action.kind == "ADD_MONITORING_TAG" and action.target_urn in new_ctx.all_urns():
+                asset = new_ctx.asset(action.target_urn)
+                assert "kronika:monitoring" in asset.tags
 
     def test_transition_does_not_apply_halt_actions(self) -> None:
         decision = self.engine.reason(_QUALITY_EVT)
         actions = self.engine.plan(decision)
         halt_actions = [a for a in actions if a.requires_human_approval]
-        ctx_before = self.engine._context
         self.engine.transition(halt_actions)
         assert self.engine._context is not None
 
@@ -182,7 +179,8 @@ class TestPublicEngineNoRules:
             event_id="evt-002",
             kind=EventKind.QUALITY_OBSERVATION,
             source_urn=_URN_RAW,
-            columns=None, payload=(),
+            columns=None,
+            payload=(),
             occurred_at="2026-07-25T10:00:00Z",
         )
         decision = engine.reason(evt)

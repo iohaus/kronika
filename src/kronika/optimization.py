@@ -53,7 +53,8 @@ def _score(urn: str, context: DataContext) -> float:
 
 def _halt_candidates(context: DataContext) -> list[str]:
     return sorted(
-        urn for urn in context.all_urns()
+        urn
+        for urn in context.all_urns()
         if context.asset(urn).get_status(Dimension.INTEGRITY) == StatusLevel.CRITICAL
     )
 
@@ -90,7 +91,7 @@ def solve(context: DataContext) -> ContainmentResult:
     # it is the candidate itself or an ancestor of it.
     #
     # Greedy minimum vertex cover:
-    # 1. Score each candidate by (weight × consumer_count).
+    # 1. Score each candidate by (weight x consumer_count).
     # 2. For each candidate (highest score first), if not yet covered,
     #    add its highest-scoring uncovered ancestor to the cut set.
     # 3. Ties broken lexicographically by URN.
@@ -122,10 +123,8 @@ def solve(context: DataContext) -> ContainmentResult:
         chosen = eligible[0] if eligible else candidate
         halt_set.add(chosen)
         score_val = _score(chosen, context)
-        rationale[chosen] = (
-            f"score={score_val:.1f}; "
-            f"covers {sum(1 for c in candidates if chosen in ancestor_map[c] or chosen == c)} candidate(s)"
-        )
+        c_count = sum(1 for c in candidates if chosen in ancestor_map[c] or chosen == c)
+        rationale[chosen] = f"score={score_val:.1f}; covers {c_count} candidate(s)"
 
         for c in candidates:
             if chosen in ancestor_map[c] or chosen == c:

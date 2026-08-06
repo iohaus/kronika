@@ -38,18 +38,21 @@ class DataAudit:
         engine: object,
     ) -> list[ConsistencyViolation]:
         from kronika.impact import ImpactEngine
+
         assert isinstance(engine, ImpactEngine)
-        after1, result1 = engine.analyze(context, event)
-        after2, result2 = engine.analyze(after1, event)
+        after1, _result1 = engine.analyze(context, event)
+        after2, _result2 = engine.analyze(after1, event)
         violations: list[ConsistencyViolation] = []
         for urn in after1.all_urns():
             s1 = after1.asset(urn).status
             s2 = after2.asset(urn).status
             if s1 != s2:
-                violations.append(ConsistencyViolation(
-                    rule="idempotency",
-                    detail=f"{urn}: status differs after second pass: {s1} vs {s2}",
-                ))
+                violations.append(
+                    ConsistencyViolation(
+                        rule="idempotency",
+                        detail=f"{urn}: status differs after second pass: {s1} vs {s2}",
+                    )
+                )
         return violations
 
     @staticmethod
@@ -64,10 +67,15 @@ class DataAudit:
             a = after.asset(urn)
             for dim in Dimension:
                 if a.get_status(dim) > b.get_status(dim):
-                    violations.append(ConsistencyViolation(
-                        rule="no_improvement",
-                        detail=f"{urn} dim={dim.name}: status improved from {b.get_status(dim).name} to {a.get_status(dim).name}",
-                    ))
+                    violations.append(
+                        ConsistencyViolation(
+                            rule="no_improvement",
+                            detail=(
+                                f"{urn} dim={dim.name}: status improved from "
+                                f"{b.get_status(dim).name} to {a.get_status(dim).name}"
+                            ),
+                        )
+                    )
         return violations
 
     @staticmethod
@@ -80,10 +88,15 @@ class DataAudit:
         reachable = ImpactEngine_reachable(before, impact_result.source_urn)
         for urn in impact_result.changed:
             if urn not in reachable:
-                violations.append(ConsistencyViolation(
-                    rule="graph_conservatism",
-                    detail=f"{urn} was changed but is not reachable from source {impact_result.source_urn}",
-                ))
+                violations.append(
+                    ConsistencyViolation(
+                        rule="graph_conservatism",
+                        detail=(
+                            f"{urn} was changed but is not reachable from source "
+                            f"{impact_result.source_urn}"
+                        ),
+                    )
+                )
         return violations
 
     @staticmethod
@@ -97,15 +110,25 @@ class DataAudit:
         for urn, outcome in evidence.outcomes.items():
             if outcome.recommendation == Recommendation.HALT:
                 if not outcome.evidence_path:
-                    violations.append(ConsistencyViolation(
-                        rule="evidence_completeness",
-                        detail=f"{urn} has HALT recommendation but empty evidence path",
-                    ))
-                elif outcome.evidence_path[0] != impact_result.source_urn and urn != impact_result.source_urn:
-                    violations.append(ConsistencyViolation(
-                        rule="evidence_completeness",
-                        detail=f"{urn} evidence path does not start at source {impact_result.source_urn}",
-                    ))
+                    violations.append(
+                        ConsistencyViolation(
+                            rule="evidence_completeness",
+                            detail=f"{urn} has HALT recommendation but empty evidence path",
+                        )
+                    )
+                elif (
+                    outcome.evidence_path[0] != impact_result.source_urn
+                    and urn != impact_result.source_urn
+                ):
+                    violations.append(
+                        ConsistencyViolation(
+                            rule="evidence_completeness",
+                            detail=(
+                                f"{urn} evidence path does not start at source "
+                                f"{impact_result.source_urn}"
+                            ),
+                        )
+                    )
         return violations
 
     @staticmethod
@@ -121,8 +144,16 @@ class DataAudit:
         violations: list[ConsistencyViolation] = []
         reachable = ImpactEngine_reachable(before, event.source_urn)
         for urn, outcome in evidence.outcomes.items():
-            if outcome.recommendation == Recommendation.CLEAR and urn in reachable and urn != event.source_urn:
-                if any(s == StatusLevel.CRITICAL for s in impact_result.changed.get(event.source_urn, _NullDelta).before.status if False):
+            if (
+                outcome.recommendation == Recommendation.CLEAR
+                and urn in reachable
+                and urn != event.source_urn
+            ):
+                if any(
+                    s == StatusLevel.CRITICAL
+                    for s in impact_result.changed.get(event.source_urn, _NullDelta).before.status
+                    if False
+                ):
                     pass
                 source_delta = impact_result.changed.get(event.source_urn)
                 if source_delta is not None:
@@ -130,15 +161,18 @@ class DataAudit:
                         s == StatusLevel.CRITICAL for s in source_delta.after.status
                     )
                     if source_was_critical and outcome.recommendation == Recommendation.CLEAR:
-                        violations.append(ConsistencyViolation(
-                            rule="no_false_clear",
-                            detail=f"{urn} is CLEAR but is reachable from a CRITICAL source",
-                        ))
+                        violations.append(
+                            ConsistencyViolation(
+                                rule="no_false_clear",
+                                detail=f"{urn} is CLEAR but is reachable from a CRITICAL source",
+                            )
+                        )
         return violations
 
 
 def ImpactEngine_reachable(context: DataContext, source: str) -> set[str]:
     from collections import deque
+
     seen: set[str] = set()
     q: deque[str] = deque([source])
     while q:

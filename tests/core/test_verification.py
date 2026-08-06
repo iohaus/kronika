@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import pytest
-
 from kronika.data_context import DataContext
 from kronika.dimensions import Dimension, StatusLevel
 from kronika.types import DataAsset, EdgeKind, LineageEdge, PolicyRule
-from kronika.verification import FindingKind, VerificationResult, verify_all, verify_rule
+from kronika.verification import FindingKind, verify_all, verify_rule
 
 _P = "urn:li:dataPlatform:hive"
 
@@ -59,7 +57,9 @@ def _healthcare_context(with_rules: bool = True) -> DataContext:
         assets=assets,
         edges=[
             LineageEdge(_URN_RAW, _URN_STAGING, EdgeKind.IDENTITY, None),
-            LineageEdge(_URN_STAGING, _URN_BILLING, EdgeKind.PROJECTION, frozenset({"billing_amount"})),
+            LineageEdge(
+                _URN_STAGING, _URN_BILLING, EdgeKind.PROJECTION, frozenset({"billing_amount"})
+            ),
             LineageEdge(_URN_STAGING, _URN_DEMO, EdgeKind.PROJECTION, frozenset({"patient_id"})),
         ],
         rules=rules,

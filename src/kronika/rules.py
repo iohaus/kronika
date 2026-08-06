@@ -5,7 +5,7 @@ from enum import Enum, unique
 from typing import Any
 
 from kronika.data_context import DataContext
-from kronika.dimensions import Dimension, StatusLevel, worse_of
+from kronika.dimensions import StatusLevel, worse_of
 from kronika.types import DataAsset, PolicyRule
 
 _ALLOWED_BUILTINS: dict[str, Any] = {
@@ -45,7 +45,7 @@ class RuleEngine:
             "asset": _AssetView(asset, context),
         }
         try:
-            result = eval(rule.predicate, namespace)  # noqa: S307
+            result = eval(rule.predicate, namespace)
         except Exception as exc:
             return RuleResult(rule_id=rule.rule_id, outcome=RuleOutcome.UNKNOWN, witness=str(exc))
 
@@ -70,7 +70,9 @@ class RuleEngine:
             results[urn] = [self.evaluate(rule, asset, context) for rule in rules]
         return results
 
-    def apply_violations(self, context: DataContext, rule_results: dict[str, list[RuleResult]]) -> DataContext:
+    def apply_violations(
+        self, context: DataContext, rule_results: dict[str, list[RuleResult]]
+    ) -> DataContext:
         updated = context
         for urn, results in sorted(rule_results.items()):
             asset = updated.asset(urn)
@@ -79,7 +81,9 @@ class RuleEngine:
                 if result.outcome == RuleOutcome.VIOLATED:
                     rule = next(r for r in context.rules_for(urn) if r.rule_id == result.rule_id)
                     current = modified.get_status(rule.dimension)
-                    modified = modified.with_status(rule.dimension, worse_of(current, StatusLevel.CRITICAL))
+                    modified = modified.with_status(
+                        rule.dimension, worse_of(current, StatusLevel.CRITICAL)
+                    )
             if modified != asset:
                 updated = updated.replace_asset(modified)
         return updated
