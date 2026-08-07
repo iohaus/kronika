@@ -21,15 +21,15 @@ ops_dir = str(Path(__file__).resolve().parent.parent.parent / "ops")
 if ops_dir not in sys.path:
     sys.path.insert(0, ops_dir)
 
-try:
-    from seed_healthcare import get_healthcare_dataset
+# try:
+#     from seed_healthcare import get_healthcare_dataset
 
-    _mock_data = get_healthcare_dataset()
-except ImportError:
-    _mock_data = None
+#     _mock_data = get_healthcare_dataset()
+# except ImportError:
+#     _mock_data = None
 
-_reader = HttpDataHubReader(mock_data=_mock_data)
-_writer = HttpDataHubWriter(mock_mode=_mock_data is not None)
+_reader = HttpDataHubReader()
+_writer = HttpDataHubWriter()
 _store = DuckDBEvidenceStore(":memory:")
 _engine = PublicEngine()
 _runner = DecisionEpisodeRunner(_engine, _reader, _writer, _store)

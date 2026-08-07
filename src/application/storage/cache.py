@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from kronika.evidence import EvidenceRecord
 from kronika.ports import EvidenceStore, RecommendedAction
+
+log = logging.getLogger("kronika.application.store")
 
 
 class DuckDBEvidenceStore(EvidenceStore):
@@ -21,8 +24,15 @@ class DuckDBEvidenceStore(EvidenceStore):
                 self.conn = duckdb.connect(db_path)
                 self._init_db()
                 self._use_duckdb = True
-            except Exception:
+                log.info("DuckDBEvidenceStore: DuckDB backend initialised | path=%s", db_path)
+            except Exception as exc:
                 self._use_duckdb = False
+                log.warning(
+                    "DuckDBEvidenceStore: DuckDB unavailable, falling back to in-memory | error=%s",
+                    exc,
+                )
+        else:
+            log.info("DuckDBEvidenceStore: in-memory mode (no persistence)")
 
     def _init_db(self) -> None:
         if not self._use_duckdb:
@@ -48,6 +58,13 @@ class DuckDBEvidenceStore(EvidenceStore):
         """)
 
     def save(self, evidence: EvidenceRecord) -> None:
+        log.info(
+            "store.save: persisting evidence | event_id=%s source_urn=%s outcomes=%d halt_set=%s",
+            evidence.event_id,
+            evidence.source_urn,
+            len(evidence.outcomes),
+            sorted(evidence.containment.halt_set),
+        )
         payload = {
             "event_id": evidence.event_id,
             "occurred_at": evidence.occurred_at,
@@ -81,6 +98,7 @@ class DuckDBEvidenceStore(EvidenceStore):
                 "INSERT OR REPLACE INTO evidence_records VALUES (?, ?, ?, ?)",
                 [evidence.event_id, evidence.occurred_at, evidence.source_urn, payload_str],
             )
+            log.debug("store.save: DuckDB write complete | event_id=%s", evidence.event_id)
 
     def load(self, event_id: str) -> EvidenceRecord | None:
         return self._memory_evidence.get(event_id)
@@ -100,6 +118,13 @@ class DuckDBEvidenceStore(EvidenceStore):
         return results
 
     def save_pending_action(self, action: RecommendedAction, event_id: str) -> None:
+        log.info(
+            "store.save_pending_action: queuing | action_id=%s kind=%s target_urn=%s event_id=%s",
+            action.action_id,
+            action.kind,
+            action.target_urn,
+            event_id,
+        )
         record = {
             "action_id": action.action_id,
             "event_id": event_id,
@@ -126,17 +151,30 @@ class DuckDBEvidenceStore(EvidenceStore):
             )
 
     def list_pending_actions(self) -> list[dict[str, Any]]:
-        return [r for r in self._memory_pending.values() if r["status"] == "PENDING"]
+        result = [r for r in self._memory_pending.values() if r["status"] == "PENDING"]
+        log.debug("store.list_pending_actions: pending_count=%d", len(result))
+        return result
 
     def resolve_pending_action(self, action_id: str, status: str) -> dict[str, Any] | None:
         if action_id not in self._memory_pending:
+            log.warning("store.resolve_pending_action: unknown action | action_id=%s", action_id)
             return None
         record = self._memory_pending[action_id]
+        previous_status = record["status"]
         record["status"] = status.upper()
+        log.info(
+            "store.resolve_pending_action: resolved | action_id=%s %s → %s",
+            action_id,
+            previous_status,
+            record["status"],
+        )
 
         if self._use_duckdb:
             self.conn.execute(
                 "UPDATE pending_actions SET status = ? WHERE action_id = ?",
                 [status.upper(), action_id],
+            )
+            log.debug(
+                "store.resolve_pending_action: DuckDB update complete | action_id=%s", action_id
             )
         return record

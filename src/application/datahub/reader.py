@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import httpx
 
 from kronika.ports import DataHubReader
 from kronika.types import ValidationError
+
+log = logging.getLogger("kronika.datahub.reader")
 
 
 class DataHubAPIError(Exception):
@@ -42,6 +45,18 @@ class HttpDataHubReader(DataHubReader):
         self.token = token
         self.timeout = timeout
         self._mock_data = mock_data
+        if mock_data is not None:
+            log.info(
+                "HttpDataHubReader initialized in MOCK mode | datasets=%d edges=%d",
+                len(mock_data.get("datasets", [])),
+                len(mock_data.get("edges", [])),
+            )
+        else:
+            log.info(
+                "HttpDataHubReader initialized in LIVE mode | server_url=%s timeout=%.1fs",
+                self.server_url,
+                self.timeout,
+            )
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -54,6 +69,7 @@ class HttpDataHubReader(DataHubReader):
             return {}
 
         url = f"{self.server_url}/api/graphql"
+        log.debug("_post_graphql: POST %s", url)
         try:
             with httpx.Client(timeout=self.timeout) as client:
                 response = client.post(
@@ -62,21 +78,32 @@ class HttpDataHubReader(DataHubReader):
                     headers=self._headers(),
                 )
                 if response.status_code != 200:
+                    log.error(
+                        "_post_graphql: non-200 response | status=%d body=%.200s",
+                        response.status_code,
+                        response.text,
+                    )
                     raise DataHubAPIError(response.text, response.status_code)
                 data = response.json()
                 if "errors" in data:
+                    log.error("_post_graphql: GraphQL errors | errors=%s", data["errors"])
                     raise DataHubAPIError(str(data["errors"]))
+                log.debug("_post_graphql: success | keys=%s", list(data.get("data", {}).keys()))
                 return data.get("data", {})
         except httpx.RequestError as exc:
+            log.error("_post_graphql: connection failed | url=%s error=%s", url, exc)
             raise DataHubAPIError(f"Connection failed: {exc}") from exc
 
     def list_datasets(self) -> list[dict[str, Any]]:
+        log.debug("list_datasets: fetching datasets")
         if self._mock_data is not None:
             datasets = self._mock_data.get("datasets", [])
             for d in datasets:
                 urn = d.get("urn")
                 if not urn or not isinstance(urn, str) or not urn.startswith("urn:li:"):
+                    log.error("list_datasets: invalid URN in mock data | record=%s", d)
                     raise ValidationError("reader.datasets.urn", "invalid_urn")
+            log.info("list_datasets: returned %d datasets (mock)", len(datasets))
             return datasets
 
         query = """
@@ -129,11 +156,15 @@ class HttpDataHubReader(DataHubReader):
                 }
             )
 
+        log.info("list_datasets: returned %d datasets (live)", len(datasets))
         return datasets
 
     def list_lineage_edges(self) -> list[dict[str, Any]]:
+        log.debug("list_lineage_edges: fetching edges")
         if self._mock_data is not None:
-            return self._mock_data.get("edges", [])
+            edges = self._mock_data.get("edges", [])
+            log.info("list_lineage_edges: returned %d edges (mock)", len(edges))
+            return edges
 
         query = """
         query getLineage {
@@ -164,14 +195,21 @@ class HttpDataHubReader(DataHubReader):
                     }
                 )
 
+        log.info("list_lineage_edges: returned %d edges (live)", len(edges))
         return edges
 
     def list_glossary_terms(self) -> list[dict[str, Any]]:
         if self._mock_data is not None:
-            return self._mock_data.get("glossary_terms", [])
+            terms = self._mock_data.get("glossary_terms", [])
+            log.debug("list_glossary_terms: returned %d terms (mock)", len(terms))
+            return terms
+        log.debug("list_glossary_terms: live mode, returning empty")
         return []
 
     def list_policy_rules(self) -> list[dict[str, Any]]:
         if self._mock_data is not None:
-            return self._mock_data.get("policy_rules", [])
+            rules = self._mock_data.get("policy_rules", [])
+            log.debug("list_policy_rules: returned %d rules (mock)", len(rules))
+            return rules
+        log.debug("list_policy_rules: live mode, returning empty")
         return []

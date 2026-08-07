@@ -22,12 +22,14 @@ from PyQt6.QtWidgets import QApplication
 
 import qasync
 from bridge import ConsoleBridge
+from kronika.logging import setup_logging
 
-log = logging.getLogger("kronika.console")
+log = logging.getLogger("kronika-console")
 
 
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    setup_logging()
 
     app = QApplication(sys.argv)
     app.setOrganizationName("iohaus")

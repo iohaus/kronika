@@ -16,7 +16,7 @@ if ops_dir not in sys.path:
 try:
     # pyrefly: ignore [missing-import]
     from seed_healthcare import get_healthcare_dataset
-    _INITIAL_MOCK_DATA = get_healthcare_dataset()
+    _INITIAL_MOCK_DATA = None
 except ImportError:
     _INITIAL_MOCK_DATA = None
 
@@ -26,9 +26,15 @@ from application.datahub.reader import HttpDataHubReader
 from application.datahub.writer import HttpDataHubWriter
 from application.storage.cache import DuckDBEvidenceStore
 from kronika.engine import PublicEngine
+from kronika.logging import setup_logging
 from kronika.types import EventKind, MetadataEvent
 
+# Activate file-based logging as early as possible so that all module-level
+# logger.getLogger() calls below are routed to kronika.log from the first line.
+_LOG_FILE = setup_logging(log_dir=Path(__file__).parent / "logs")
+
 log = logging.getLogger("kronika.bridge")
+ui_log = logging.getLogger("kronika.ui")
 
 
 def _short_urn(urn: str) -> str:
@@ -54,8 +60,8 @@ class ConsoleBridge(QObject):
         super().__init__(parent)
 
         self._mock_data = _INITIAL_MOCK_DATA
-        self._reader = HttpDataHubReader(mock_data=self._mock_data)
-        self._writer = HttpDataHubWriter(mock_mode=True)
+        self._reader = HttpDataHubReader()
+        self._writer = HttpDataHubWriter()
         self._store = DuckDBEvidenceStore(":memory:")
         self._engine = PublicEngine()
         self._runner = DecisionEpisodeRunner(self._engine, self._reader, self._writer, self._store)
@@ -88,6 +94,12 @@ class ConsoleBridge(QObject):
         self._system_status = "HEALTHY"
 
         self._rebuild_graph_models()
+        log.info(
+            "ConsoleBridge init complete | log_file=%s assets=%d edges=%d",
+            _LOG_FILE,
+            len(self._nodes),
+            len(self._edges),
+        )
         self._log("INFO", "Kronika Console Bridge initialized with healthcare world model.")
 
     def _log(self, level: str, message: str) -> None:
@@ -196,12 +208,20 @@ class ConsoleBridge(QObject):
 
     @pyqtSlot(str)
     def selectAsset(self, urn: str) -> None:
+        ui_log.info("UI: selectAsset | urn=%s", urn)
         if self._selected_urn != urn:
+            previous = self._selected_urn
             self._selected_urn = urn
+            ui_log.debug("UI: asset selection changed | from=%s to=%s", previous, urn)
             self.selectedAssetChanged.emit()
 
     @pyqtSlot(str, str)
     def triggerQualityAnomaly(self, source_urn: str, column_name: str) -> None:
+        ui_log.info(
+            "UI: triggerQualityAnomaly | source_urn=%s column_name=%s",
+            source_urn,
+            column_name,
+        )
         self._log("WARN", f"Quality anomaly event injected at {source_urn} (Column: {column_name})")
 
         event_id = f"ev-q-{int(datetime.datetime.now(datetime.timezone.utc).timestamp())}"
@@ -262,14 +282,23 @@ class ConsoleBridge(QObject):
         self._rebuild_graph_models()
         self.episodeUpdated.emit()
         self.pendingActionsChanged.emit()
+        ui_log.info(
+            "UI: triggerQualityAnomaly complete | event_id=%s system_status=%s halt_set=%s actions=%d",
+            event_id,
+            self._system_status,
+            halt_set,
+            len(actions),
+        )
         self._log("INFO", f"Episode {event_id} evaluation complete. Recommended actions: {len(actions)}")
 
     @pyqtSlot(str)
     def approveAction(self, action_id: str) -> None:
+        ui_log.info("UI: approveAction | action_id=%s", action_id or "<auto-select>")
         if not action_id:
             pending = self._store.list_pending_actions()
             if pending:
                 action_id = pending[0]["action_id"]
+                ui_log.debug("UI: approveAction auto-selected | action_id=%s", action_id)
 
         resolved = self._store.resolve_pending_action(action_id, "APPROVED")
         if resolved:
@@ -284,6 +313,12 @@ class ConsoleBridge(QObject):
                 )
                 self._log("WARN", f"INCIDENT CREATED: Pipeline halted for {target_urn}")
             self._current_episode["status"] = "APPROVED"
+            ui_log.info(
+                "UI: approveAction resolved | action_id=%s target_urn=%s system_status=%s",
+                action_id,
+                resolved.get("target_urn", ""),
+                self._system_status,
+            )
             self.pendingActionsChanged.emit()
             self.episodeUpdated.emit()
             self._rebuild_graph_models()
@@ -298,21 +333,34 @@ class ConsoleBridge(QObject):
             self._log("INFO", f"Action APPROVED by operator for target {target_urn}.")
             self._log("WARN", f"INCIDENT CREATED: Pipeline halted for {target_urn}")
             self._current_episode["status"] = "APPROVED"
+            ui_log.info(
+                "UI: approveAction fallback resolved | target_urn=%s system_status=%s",
+                target_urn,
+                self._system_status,
+            )
             self.pendingActionsChanged.emit()
             self.episodeUpdated.emit()
             self._rebuild_graph_models()
 
     @pyqtSlot(str)
     def rejectAction(self, action_id: str) -> None:
+        ui_log.info("UI: rejectAction | action_id=%s", action_id or "<auto-select>")
         if not action_id:
             pending = self._store.list_pending_actions()
             if pending:
                 action_id = pending[0]["action_id"]
+                ui_log.debug("UI: rejectAction auto-selected | action_id=%s", action_id)
 
         resolved = self._store.resolve_pending_action(action_id, "REJECTED")
+        previous_status = self._system_status
         self._current_episode["status"] = "REJECTED"
         self._current_episode["halt_set"] = []
         self._system_status = "HEALTHY"
+        ui_log.info(
+            "UI: rejectAction resolved | action_id=%s system_status %s → HEALTHY",
+            action_id,
+            previous_status,
+        )
 
         if resolved:
             self._log("INFO", f"Action {action_id} REJECTED by operator — pipeline halt overridden.")
@@ -325,6 +373,7 @@ class ConsoleBridge(QObject):
 
     @pyqtSlot()
     def resetDemo(self) -> None:
+        ui_log.info("UI: resetDemo | previous_status=%s", self._system_status)
         self._store = DuckDBEvidenceStore(":memory:")
         self._engine = PublicEngine()
         self._runner = DecisionEpisodeRunner(self._engine, self._reader, self._writer, self._store)
@@ -351,4 +400,5 @@ class ConsoleBridge(QObject):
         self._rebuild_graph_models()
         self.episodeUpdated.emit()
         self.pendingActionsChanged.emit()
+        ui_log.info("UI: resetDemo complete | assets=%d edges=%d", len(self._nodes), len(self._edges))
         self._log("INFO", "World model and decision store reset.")
