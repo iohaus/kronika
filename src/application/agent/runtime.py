@@ -3,9 +3,16 @@ from __future__ import annotations
 import logging
 
 from application.datahub.builder import build_context
+from application.llm.adapter import LocalLLMAdapter
 from application.storage.cache import DuckDBEvidenceStore
 from kronika.engine import PublicEngine
-from kronika.ports import DataHubReader, DataHubWriter, DecisionRecord, RecommendedAction
+from kronika.ports import (
+    DataHubReader,
+    DataHubWriter,
+    DecisionRecord,
+    LLMAdapter,
+    RecommendedAction,
+)
 from kronika.types import MetadataEvent
 
 log = logging.getLogger("kronika.application.runner")
@@ -18,11 +25,13 @@ class DecisionEpisodeRunner:
         reader: DataHubReader,
         writer: DataHubWriter,
         store: DuckDBEvidenceStore,
+        llm: LLMAdapter | None = None,
     ) -> None:
         self.engine = engine
         self.reader = reader
         self.writer = writer
         self.store = store
+        self.llm = llm or LocalLLMAdapter()
 
     def run_episode(self, event: MetadataEvent) -> tuple[DecisionRecord, list[RecommendedAction]]:
         log.info(
@@ -51,10 +60,22 @@ class DecisionEpisodeRunner:
             autonomous_count,
         )
 
+        # Generate audience-tailored explanations and surface them in the log so
+        # they are always observable in kronika.log regardless of UI state.
+        for audience in ("ENGINEER", "OWNER", "EXECUTIVE"):
+            explanation = self.llm.explain(decision.evidence, audience=audience)
+            indented = "\n\t".join(explanation.splitlines())
+            log.info(
+                "run_episode: llm_rationale [%s] event_id=%s\n\n\t%s\n",
+                audience,
+                event.event_id,
+                indented,
+            )
+
         for action in actions:
             if action.requires_human_approval:
                 log.info(
-                    "run_episode: queuing action for human approval | action_id=%s kind=%s target_urn=%s",
+                    "run_episode: queuing action | action_id=%s kind=%s target_urn=%s",
                     action.action_id,
                     action.kind,
                     action.target_urn,

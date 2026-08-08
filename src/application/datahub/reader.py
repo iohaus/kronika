@@ -33,6 +33,15 @@ def capability_probe(reader: DataHubReader) -> None:
         raise ConfigurationError("list_entities") from exc
 
 
+try:
+    from datahub.sdk import DataHubClient
+    from datahub_agent_context import set_client
+
+    HAS_AGENT_CONTEXT = True
+except ImportError:
+    HAS_AGENT_CONTEXT = False
+
+
 class HttpDataHubReader(DataHubReader):
     def __init__(
         self,
@@ -45,6 +54,15 @@ class HttpDataHubReader(DataHubReader):
         self.token = token
         self.timeout = timeout
         self._mock_data = mock_data
+
+        if HAS_AGENT_CONTEXT and self._mock_data is None:
+            try:
+                sdk_client = DataHubClient(server=self.server_url, token=self.token)
+                set_client(sdk_client)
+                log.info("HttpDataHubReader: DataHub Agent Context Kit bound successfully.")
+            except Exception as exc:
+                log.warning("HttpDataHubReader: Agent Context Kit binding warning: %s", exc)
+
         if mock_data is not None:
             log.info(
                 "HttpDataHubReader initialized in MOCK mode | datasets=%d edges=%d",
@@ -108,7 +126,7 @@ class HttpDataHubReader(DataHubReader):
 
         query = """
         query listDatasets {
-            searchAcrossEntities(input: {types: [DATASET], start: 0, count: 1000}) {
+            searchAcrossEntities(input: {types: [DATASET], query: "*", start: 0, count: 1000}) {
                 searchResults {
                     entity {
                         urn
@@ -117,7 +135,14 @@ class HttpDataHubReader(DataHubReader):
                             name
                             platform { name }
                             tags { tags { tag { urn name } } }
-                            ownership { owners { owner { urn } } }
+                            ownership {
+                                owners {
+                                    owner {
+                                        ... on CorpUser { urn }
+                                        ... on CorpGroup { urn }
+                                    }
+                                }
+                            }
                             domain { domain { urn } }
                         }
                     }
@@ -136,16 +161,33 @@ class HttpDataHubReader(DataHubReader):
                 raise ValidationError("reader.datasets.urn", "invalid_urn")
 
             tags: list[str] = []
-            for t_item in entity.get("tags", {}).get("tags", []):
-                t_name = t_item.get("tag", {}).get("name")
-                if t_name:
-                    tags.append(t_name)
+            tags_obj = entity.get("tags")
+            if isinstance(tags_obj, dict):
+                for t_item in tags_obj.get("tags", []):
+                    if isinstance(t_item, dict):
+                        t_name = (
+                            t_item.get("tag", {}).get("name")
+                            if isinstance(t_item.get("tag"), dict)
+                            else None
+                        )
+                        if t_name:
+                            tags.append(t_name)
 
-            owners = entity.get("ownership", {}).get("owners", [])
-            owner_urn = owners[0].get("owner", {}).get("urn") if owners else None
+            owners_obj = entity.get("ownership")
+            owner_urn = None
+            if isinstance(owners_obj, dict):
+                owners = owners_obj.get("owners", [])
+                if owners and isinstance(owners[0], dict):
+                    owner_obj = owners[0].get("owner")
+                    if isinstance(owner_obj, dict):
+                        owner_urn = owner_obj.get("urn")
 
-            domain_obj = entity.get("domain", {}).get("domain")
-            domain_urn = domain_obj.get("urn") if isinstance(domain_obj, dict) else None
+            domain_container = entity.get("domain")
+            domain_urn = None
+            if isinstance(domain_container, dict):
+                domain_obj = domain_container.get("domain")
+                if isinstance(domain_obj, dict):
+                    domain_urn = domain_obj.get("urn")
 
             datasets.append(
                 {
@@ -168,32 +210,81 @@ class HttpDataHubReader(DataHubReader):
 
         query = """
         query getLineage {
-            searchAcrossLineage(input: {direction: DOWNSTREAM, start: 0, count: 1000}) {
+            searchAcrossEntities(input: {types: [DATASET], query: "*", start: 0, count: 1000}) {
                 searchResults {
-                    entity { urn }
-                    lineageRelationshipTypes
+                    entity {
+                        urn
+                        ... on Dataset {
+                            schemaMetadata {
+                                fields {
+                                    fieldPath
+                                }
+                            }
+                            lineage(input: {direction: DOWNSTREAM, start: 0, count: 100}) {
+                                relationships {
+                                    entity {
+                                        urn
+                                    }
+                                    type
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
         """
         data = self._post_graphql(query)
-        results = data.get("searchAcrossLineage", {}).get("searchResults", [])
+        search_res = data.get("searchAcrossEntities", {}).get("searchResults", [])
         edges: list[dict[str, Any]] = []
 
-        for res in results:
-            src = res.get("entity", {}).get("urn")
-            dst = res.get("destination", {}).get("urn") if "destination" in res else None
-            if src and dst:
-                if not src.startswith("urn:li:") or not dst.startswith("urn:li:"):
-                    raise ValidationError("reader.edge", "invalid_urn")
-                edges.append(
-                    {
-                        "src": src,
-                        "dst": dst,
-                        "kind": "IDENTITY",
-                        "columns": None,
-                    }
-                )
+        schema_fields_map: dict[str, list[str]] = {}
+        for item in search_res:
+            entity = item.get("entity", {})
+            urn = entity.get("urn")
+            if urn and isinstance(urn, str):
+                fields: list[str] = []
+                schema_meta = entity.get("schemaMetadata")
+                if isinstance(schema_meta, dict):
+                    f_list = schema_meta.get("fields", [])
+                    if isinstance(f_list, list):
+                        for f in f_list:
+                            if isinstance(f, dict) and f.get("fieldPath"):
+                                fields.append(f["fieldPath"])
+                if fields:
+                    schema_fields_map[urn] = fields
+
+        for item in search_res:
+            entity = item.get("entity", {})
+            src = entity.get("urn")
+            lineage_obj = entity.get("lineage") if isinstance(entity, dict) else None
+            if isinstance(lineage_obj, dict):
+                rels = lineage_obj.get("relationships", [])
+                for rel in rels:
+                    if isinstance(rel, dict):
+                        dst_entity = rel.get("entity")
+                        dst = dst_entity.get("urn") if isinstance(dst_entity, dict) else None
+                        if src and dst:
+                            if not src.startswith("urn:li:") or not dst.startswith("urn:li:"):
+                                raise ValidationError("reader.edge", "invalid_urn")
+
+                            dst_fields = schema_fields_map.get(dst)
+
+                            if dst_fields:
+                                kind = "PROJECTION"
+                                cols_list = dst_fields
+                            else:
+                                kind = "IDENTITY"
+                                cols_list = None
+
+                            edges.append(
+                                {
+                                    "src": src,
+                                    "dst": dst,
+                                    "kind": kind,
+                                    "columns": cols_list,
+                                }
+                            )
 
         log.info("list_lineage_edges: returned %d edges (live)", len(edges))
         return edges

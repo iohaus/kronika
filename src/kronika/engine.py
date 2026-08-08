@@ -104,7 +104,7 @@ class PublicEngine:
 
             elif outcome.recommendation == Recommendation.MONITOR:
                 log.info(
-                    "plan: MONITOR action planned | action_id=%s target_urn=%s requires_approval=False",
+                    "plan: MONITOR action planned | action_id=%s target_urn=%s",
                     action_id,
                     urn,
                 )

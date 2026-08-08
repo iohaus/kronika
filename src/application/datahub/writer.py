@@ -12,6 +12,14 @@ try:
 except ImportError:
     HAS_DATAHUB_SDK = False
 
+try:
+    from datahub.sdk import DataHubClient
+    from datahub_agent_context import set_client
+
+    HAS_AGENT_CONTEXT = True
+except ImportError:
+    HAS_AGENT_CONTEXT = False
+
 from kronika.ports import DataHubWriter
 
 log = logging.getLogger("kronika.datahub.writer")
@@ -42,6 +50,14 @@ class HttpDataHubWriter(DataHubWriter):
         self.incidents_written: list[dict[str, Any]] = []
         self.annotations_written: list[dict[str, Any]] = []
         self._seen_events: set[str] = set()
+
+        if HAS_AGENT_CONTEXT and not mock_mode:
+            try:
+                sdk_client = DataHubClient(server=self.server_url, token=self.token)
+                set_client(sdk_client)
+                log.info("HttpDataHubWriter: DataHub Agent Context Kit bound successfully.")
+            except Exception as exc:
+                log.warning("HttpDataHubWriter: Agent Context Kit binding warning: %s", exc)
         mode = "MOCK" if mock_mode else "LIVE"
         log.info(
             "HttpDataHubWriter initialized in %s mode | server_url=%s",
@@ -182,3 +198,37 @@ class HttpDataHubWriter(DataHubWriter):
         except httpx.RequestError as exc:
             log.error("add_annotation: connection failed | url=%s error=%s", url, exc)
             raise DataHubWriteError(f"Connection failed: {exc}") from exc
+
+    def add_tag(self, urn: str, tag_urn: str = "urn:li:tag:critical") -> None:
+        if self.mock_mode:
+            log.debug("add_tag: mock mode — skipping live write")
+            return
+
+        query = """
+        mutation addTag($input: TagAssociationInput!) {
+            addTag(input: $input)
+        }
+        """
+        variables = {
+            "input": {
+                "tagUrn": tag_urn,
+                "resourceUrn": urn,
+            }
+        }
+        url = f"{self.server_url}/api/graphql"
+        log.info("add_tag: writing tag to DataHub | url=%s urn=%s tag=%s", url, urn, tag_urn)
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                resp = client.post(
+                    url, json={"query": query, "variables": variables}, headers=self._headers()
+                )
+                if resp.status_code != 200:
+                    log.error(
+                        "add_tag: write failed | status=%d body=%.200s",
+                        resp.status_code,
+                        resp.text,
+                    )
+                else:
+                    log.info("add_tag: written successfully | urn=%s tag=%s", urn, tag_urn)
+        except httpx.RequestError as exc:
+            log.error("add_tag: connection failed | url=%s error=%s", url, exc)

@@ -2,28 +2,17 @@ from __future__ import annotations
 
 import datetime
 import logging
-import sys
 from pathlib import Path
 from typing import Any
 
 from PyQt6.QtCore import QObject, pyqtProperty, pyqtSignal, pyqtSlot
 
-# Add ops to path to import seed dataset if available
-ops_dir = str(Path(__file__).parent.parent / "ops")
-if ops_dir not in sys.path:
-    sys.path.insert(0, ops_dir)
-
-try:
-    # pyrefly: ignore [missing-import]
-    from seed_healthcare import get_healthcare_dataset
-    _INITIAL_MOCK_DATA = None
-except ImportError:
-    _INITIAL_MOCK_DATA = None
-
 from application.agent.runtime import DecisionEpisodeRunner
+from application.config import settings
 from application.datahub.builder import build_context
 from application.datahub.reader import HttpDataHubReader
 from application.datahub.writer import HttpDataHubWriter
+from application.llm.adapter import OpenAILLMAdapter
 from application.storage.cache import DuckDBEvidenceStore
 from kronika.engine import PublicEngine
 from kronika.logging import setup_logging
@@ -59,15 +48,30 @@ class ConsoleBridge(QObject):
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
 
-        self._mock_data = _INITIAL_MOCK_DATA
-        self._reader = HttpDataHubReader()
-        self._writer = HttpDataHubWriter()
-        self._store = DuckDBEvidenceStore(":memory:")
+        self._reader = HttpDataHubReader(
+            server_url=settings.datahub_server_url,
+            token=settings.datahub_token,
+            timeout=settings.datahub_timeout_seconds,
+        )
+        self._writer = HttpDataHubWriter(
+            server_url=settings.datahub_server_url,
+            token=settings.datahub_token,
+            timeout=settings.datahub_timeout_seconds,
+        )
+        self._store = DuckDBEvidenceStore(settings.duckdb_path)
         self._engine = PublicEngine()
-        self._runner = DecisionEpisodeRunner(self._engine, self._reader, self._writer, self._store)
+        self._llm = OpenAILLMAdapter(
+            model=settings.openai_model,
+            api_key=settings.openai_api_key,
+            base_url=settings.openai_base_url,
+            timeout=settings.llm_timeout_seconds,
+        )
+        self._runner = DecisionEpisodeRunner(
+            self._engine, self._reader, self._writer, self._store, llm=self._llm
+        )
 
         # Initial engine build
-        ctx = build_context(self._reader)
+        ctx = build_context(self._reader, max_size=settings.max_world_size)
         self._engine.observe(ctx)
 
         self._selected_urn: str | None = None
@@ -135,27 +139,31 @@ class ConsoleBridge(QObject):
             domain = asset.domain_urn.split(":")[-1] if asset.domain_urn else "default"
             tags = list(asset.tags)
 
-            self._nodes.append({
-                "urn": urn,
-                "name": name,
-                "status": status_str,
-                "domain": domain,
-                "owner": asset.owner_urn or "Unassigned",
-                "tags": tags,
-                "is_halted": is_halted,
-            })
+            self._nodes.append(
+                {
+                    "urn": urn,
+                    "name": name,
+                    "status": status_str,
+                    "domain": domain,
+                    "owner": asset.owner_urn or "Unassigned",
+                    "tags": tags,
+                    "is_halted": is_halted,
+                }
+            )
 
         # Build edge representations
         for edge in self._engine._context._edges:
             cols = list(edge.columns) if edge.columns else []
-            self._edges.append({
-                "src": edge.src,
-                "dst": edge.dst,
-                "src_name": _short_urn(edge.src),
-                "dst_name": _short_urn(edge.dst),
-                "kind": edge.kind.value,
-                "columns": cols,
-            })
+            self._edges.append(
+                {
+                    "src": edge.src,
+                    "dst": edge.dst,
+                    "src_name": _short_urn(edge.src),
+                    "dst_name": _short_urn(edge.dst),
+                    "kind": edge.kind.value,
+                    "columns": cols,
+                }
+            )
 
         if self._selected_urn is None and self._nodes:
             self._selected_urn = self._nodes[0]["urn"]
@@ -215,8 +223,19 @@ class ConsoleBridge(QObject):
             ui_log.debug("UI: asset selection changed | from=%s to=%s", previous, urn)
             self.selectedAssetChanged.emit()
 
+    def _resolve_urn(self, urn: str) -> str:
+        all_urns = set(self._engine._context.all_urns())
+        if urn in all_urns:
+            return urn
+        short_target = _short_urn(urn).split(".")[-1]
+        for candidate in all_urns:
+            if _short_urn(candidate).split(".")[-1] == short_target:
+                return candidate
+        return urn
+
     @pyqtSlot(str, str)
     def triggerQualityAnomaly(self, source_urn: str, column_name: str) -> None:
+        source_urn = self._resolve_urn(source_urn)
         ui_log.info(
             "UI: triggerQualityAnomaly | source_urn=%s column_name=%s",
             source_urn,
@@ -257,9 +276,7 @@ class ConsoleBridge(QObject):
 
         self._system_status = "CONTAINED" if halt_set else "HEALTHY"
 
-        rationale = f"Negative quality observation on {column_name or 'dataset'} violates validity constraints. Propagation blast radius identified."
-        if halt_set:
-            rationale += f" Automatic containment recommended for {', '.join(_short_urn(h) for h in halt_set)}."
+        rationale = self._llm.explain(decision.evidence, audience="EXECUTIVE")
 
         self._current_episode = {
             "event_id": event_id,
@@ -289,7 +306,9 @@ class ConsoleBridge(QObject):
             halt_set,
             len(actions),
         )
-        self._log("INFO", f"Episode {event_id} evaluation complete. Recommended actions: {len(actions)}")
+        self._log(
+            "INFO", f"Episode {event_id} evaluation complete. Recommended actions: {len(actions)}"
+        )
 
     @pyqtSlot(str)
     def approveAction(self, action_id: str) -> None:
@@ -323,7 +342,9 @@ class ConsoleBridge(QObject):
             self.episodeUpdated.emit()
             self._rebuild_graph_models()
         elif self._current_episode.get("halt_set"):
-            target_urn = self._current_episode.get("target_urn") or self._current_episode["halt_set"][0]
+            target_urn = (
+                self._current_episode.get("target_urn") or self._current_episode["halt_set"][0]
+            )
             self._writer.create_incident(
                 urn=target_urn,
                 title="Approved Halt: Containment Action",
@@ -363,7 +384,9 @@ class ConsoleBridge(QObject):
         )
 
         if resolved:
-            self._log("INFO", f"Action {action_id} REJECTED by operator — pipeline halt overridden.")
+            self._log(
+                "INFO", f"Action {action_id} REJECTED by operator — pipeline halt overridden."
+            )
         else:
             self._log("INFO", "Action REJECTED by operator — pipeline halt overridden.")
 
@@ -374,10 +397,12 @@ class ConsoleBridge(QObject):
     @pyqtSlot()
     def resetDemo(self) -> None:
         ui_log.info("UI: resetDemo | previous_status=%s", self._system_status)
-        self._store = DuckDBEvidenceStore(":memory:")
+        self._store = DuckDBEvidenceStore(settings.duckdb_path)
         self._engine = PublicEngine()
-        self._runner = DecisionEpisodeRunner(self._engine, self._reader, self._writer, self._store)
-        ctx = build_context(self._reader)
+        self._runner = DecisionEpisodeRunner(
+            self._engine, self._reader, self._writer, self._store, llm=self._llm
+        )
+        ctx = build_context(self._reader, max_size=settings.max_world_size)
         self._engine.observe(ctx)
         self._system_status = "HEALTHY"
         self._current_episode = {
@@ -400,5 +425,7 @@ class ConsoleBridge(QObject):
         self._rebuild_graph_models()
         self.episodeUpdated.emit()
         self.pendingActionsChanged.emit()
-        ui_log.info("UI: resetDemo complete | assets=%d edges=%d", len(self._nodes), len(self._edges))
+        ui_log.info(
+            "UI: resetDemo complete | assets=%d edges=%d", len(self._nodes), len(self._edges)
+        )
         self._log("INFO", "World model and decision store reset.")

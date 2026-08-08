@@ -20,6 +20,7 @@ application = [
     "networkx>=3.3",
     "openai>=1.40",
     "acryl-datahub>=0.13.0",
+    "datahub-agent-context>=1.7.0",
 ]
 test = [
     "pytest>=8.3",
@@ -40,7 +41,7 @@ packages = ["src/kronika", "src/application"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src", "ops"]
+pythonpath = ["src"]
 asyncio_mode = "auto"
 
 [tool.ruff]
@@ -64,6 +65,7 @@ forbidden_modules = [
     "httpx",
     "aiohttp",
     "datahub",
+    "datahub_agent_context",
     "openai",
     "networkx",
     "duckdb",

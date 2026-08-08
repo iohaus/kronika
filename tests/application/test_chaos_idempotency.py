@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pytest
 from fastapi.testclient import TestClient
-from ops.seed_healthcare import _urn, get_healthcare_dataset
 
 from application.datahub.builder import build_context
 from application.datahub.reader import HttpDataHubReader
@@ -15,6 +14,7 @@ from kronika.evidence import assemble
 from kronika.impact import ImpactEngine
 from kronika.rules import RuleEngine
 from kronika.types import EventKind, MetadataEvent
+from tests.fixtures import _urn, get_healthcare_dataset
 
 
 @pytest.fixture
@@ -42,14 +42,14 @@ class TestLocalLLMAdapter:
 
         adapter = LocalLLMAdapter()
         eng_text = adapter.explain(evidence, "ENGINEER")
-        assert "[ENGINEERING DIAGNOSTIC]" in eng_text
+        assert "ENGINEERING DIAGNOSTIC REPORT:" in eng_text
         assert _urn("raw_patients") in eng_text
 
         owner_text = adapter.explain(evidence, "OWNER")
-        assert "[DATA OWNER NOTICE]" in owner_text
+        assert "DATA OWNER NOTICE:" in owner_text
 
         exec_text = adapter.explain(evidence, "EXECUTIVE")
-        assert "[EXECUTIVE SUMMARY]" in exec_text
+        assert "EXECUTIVE SUMMARY:" in exec_text
 
     def test_explain_no_banned_vocabulary(self) -> None:
         banned = [

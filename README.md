@@ -16,7 +16,13 @@ and a concrete quality observation. No recommendation is generated without evide
 
 - Python 3.12+
 - [uv](https://github.com/astral-sh/uv) (package manager)
-- DataHub instance (local: `docker compose up` in `ops/`)
+- A running DataHub instance, reachable at `DATAHUB_SERVER_URL`. For a live demo,
+  load one of the DataHub hackathon's [Sample Datasets](https://docs.datahub.com)
+  (e.g. `healthcare`) into it first — Kronika reads whatever lineage-connected
+  datasets, tags, and ownership already exist in that instance; it does not seed
+  DataHub itself. `tests/fixtures.py` provides an in-memory mock of an equivalent
+  dataset shape for tests and offline development, but it is never written to a
+  real DataHub instance.
 
 ### Install
 
@@ -50,9 +56,20 @@ src/application/  FastAPI application, DataHub adapter, LLM adapter,
 
 tests/core/       Tests for src/kronika/. No infrastructure required.
 tests/application/Tests for src/application/. May require DataHub.
-scripts/          Developer tooling (verify.sh, seed scripts).
-ops/              docker-compose.yml for local DataHub.
+tests/fixtures.py In-memory mock dataset shared by the test suite.
+scripts/          Developer tooling (verify.sh).
+kronika-console/  PyQt6 desktop console (Product UI) for the demo.
 ```
+
+---
+
+## DataHub Agent Context Kit Integration
+
+Kronika natively integrates the official **DataHub Agent Context Kit** (`datahub-agent-context` / `datahub.sdk.DataHubClient`):
+
+- **SDK Client Context Binding:** Instantiates `DataHubClient` and registers global SDK context (`set_client()`) inside both `HttpDataHubReader` and `HttpDataHubWriter`.
+- **Graph & Tool Context Access:** Leverages DataHub Agent Context SDK tools for search, entity retrieval, lineage traversal, and aspect proposal ingestion.
+- **Bi-Directional Catalog Loop:** Grounded in DataHub's context graph, Kronika executes automated containment operations and posts structured write-backs (`createIncident`, `ingestProposal`) back to DataHub GMS so all agents and platform engineers inherit the updated operational knowledge.
 
 ---
 
@@ -63,8 +80,8 @@ FastAPI, and NetworkX. It accepts plain Python dataclasses and returns plain Pyt
 dataclasses. It can be tested, audited, and reasoned about in isolation.
 
 The application layer (`src/application/`) connects the core to the outside world:
-it reads from DataHub, runs the core reasoning, and writes results back to DataHub
-as incidents, annotations, and governance assertions.
+it reads from DataHub via `datahub-agent-context` and GraphQL, runs the core reasoning,
+and writes results back to DataHub as incidents, annotations, and governance assertions.
 
 The public interface of the reasoning core is:
 

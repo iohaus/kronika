@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-from ops.seed_healthcare import _urn, get_healthcare_dataset
 
 from application.datahub.builder import ContextLimitExceededError, build_context
 from application.datahub.reader import HttpDataHubReader
@@ -9,6 +8,7 @@ from application.datahub.writer import HttpDataHubWriter
 from kronika.engine import PublicEngine
 from kronika.evidence import Recommendation
 from kronika.types import EventKind, MetadataEvent, ValidationError
+from tests.fixtures import _urn, get_healthcare_dataset
 
 
 def test_reader_mock_data() -> None:

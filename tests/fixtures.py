@@ -78,9 +78,3 @@ def get_healthcare_dataset() -> dict[str, list[dict[str, Any]]]:
             },
         ],
     }
-
-
-if __name__ == "__main__":
-    import json
-    data = get_healthcare_dataset()
-    print(json.dumps(data, indent=2))

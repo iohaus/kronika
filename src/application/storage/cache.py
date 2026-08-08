@@ -156,15 +156,27 @@ class DuckDBEvidenceStore(EvidenceStore):
         return result
 
     def resolve_pending_action(self, action_id: str, status: str) -> dict[str, Any] | None:
-        if action_id not in self._memory_pending:
+        target_id = action_id
+        if target_id not in self._memory_pending:
+            # Fallback: check if action_id is an event_id and find pending action
+            matching = [
+                aid
+                for aid, r in self._memory_pending.items()
+                if r.get("event_id") == action_id and r.get("status") == "PENDING"
+            ]
+            if matching:
+                target_id = matching[0]
+
+        if target_id not in self._memory_pending:
             log.warning("store.resolve_pending_action: unknown action | action_id=%s", action_id)
             return None
-        record = self._memory_pending[action_id]
+
+        record = self._memory_pending[target_id]
         previous_status = record["status"]
         record["status"] = status.upper()
         log.info(
             "store.resolve_pending_action: resolved | action_id=%s %s → %s",
-            action_id,
+            target_id,
             previous_status,
             record["status"],
         )
@@ -172,9 +184,23 @@ class DuckDBEvidenceStore(EvidenceStore):
         if self._use_duckdb:
             self.conn.execute(
                 "UPDATE pending_actions SET status = ? WHERE action_id = ?",
-                [status.upper(), action_id],
+                [status.upper(), target_id],
             )
             log.debug(
-                "store.resolve_pending_action: DuckDB update complete | action_id=%s", action_id
+                "store.resolve_pending_action: DuckDB update complete | action_id=%s", target_id
             )
         return record
+
+    def resolve_all_pending_actions(self, status: str) -> list[dict[str, Any]]:
+        pending = [r for r in self._memory_pending.values() if r.get("status") == "PENDING"]
+        resolved: list[dict[str, Any]] = []
+        for r in pending:
+            res = self.resolve_pending_action(r["action_id"], status)
+            if res:
+                resolved.append(res)
+        log.info(
+            "store.resolve_all_pending_actions: batch resolved %d actions to %s",
+            len(resolved),
+            status,
+        )
+        return resolved

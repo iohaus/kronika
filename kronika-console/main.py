@@ -28,7 +28,7 @@ log = logging.getLogger("kronika-console")
 
 
 def main() -> int:
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(level=logging.DEBUG, format="%(levelname)s %(name)s: %(message)s")
     setup_logging()
 
     app = QApplication(sys.argv)

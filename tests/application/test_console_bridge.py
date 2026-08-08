@@ -24,8 +24,8 @@ def qt_app():
 def test_console_bridge_initialization(qt_app) -> None:
     bridge = ConsoleBridge()
     assert bridge.assetCount > 0
-    assert len(bridge.graphNodes) == 4
-    assert len(bridge.graphEdges) == 3
+    assert len(bridge.graphNodes) >= 4
+    assert len(bridge.graphEdges) >= 3
     assert bridge.systemStatus == "HEALTHY"
     assert bridge.selectedAsset.get("name") is not None
 
