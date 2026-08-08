@@ -301,8 +301,47 @@ class HttpDataHubReader(DataHubReader):
             terms = self._mock_data.get("glossary_terms", [])
             log.debug("list_glossary_terms: returned %d terms (mock)", len(terms))
             return terms
-        log.debug("list_glossary_terms: live mode, returning empty")
-        return []
+
+        query = """
+        query listGlossaryTerms {
+            searchAcrossEntities(
+                input: {types: [GLOSSARY_TERM], query: "*", start: 0, count: 1000}
+            ) {
+                searchResults {
+                    entity {
+                        urn
+                        ... on GlossaryTerm {
+                            hierarchicalName
+                            properties { name description }
+                        }
+                    }
+                }
+            }
+        }
+        """
+        data = self._post_graphql(query)
+        search_res = data.get("searchAcrossEntities", {}).get("searchResults", [])
+        terms: list[dict[str, Any]] = []
+
+        for item in search_res:
+            entity = item.get("entity", {})
+            urn = entity.get("urn")
+            if not urn or not isinstance(urn, str):
+                continue
+
+            properties = entity.get("properties")
+            name = None
+            description = None
+            if isinstance(properties, dict):
+                name = properties.get("name")
+                description = properties.get("description")
+            if not name:
+                name = entity.get("hierarchicalName")
+
+            terms.append({"urn": urn, "name": name, "description": description})
+
+        log.info("list_glossary_terms: returned %d terms (live)", len(terms))
+        return terms
 
     def _get_custom_properties(self, urn: str) -> dict[str, str]:
         """Read `datasetProperties.customProperties` for one dataset via OpenAPI v3.
