@@ -19,6 +19,7 @@ class Settings:
     poll_interval_seconds: float = float(os.getenv("KRONIKA_POLL_INTERVAL_SECONDS", "60.0"))
     max_world_size: int = int(os.getenv("KRONIKA_MAX_WORLD_SIZE", "10000"))
     confidence_threshold: float = float(os.getenv("KRONIKA_CONFIDENCE_THRESHOLD", "0.90"))
+    writer_mock_mode: bool = os.getenv("KRONIKA_WRITER_MOCK_MODE", "false").lower() == "true"
 
 
 settings = Settings()

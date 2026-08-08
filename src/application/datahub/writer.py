@@ -1,16 +1,11 @@
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
+from urllib.parse import quote
 
 import httpx
-
-try:
-    from datahub.emitter.rest_emitter import DataHubRestEmitter
-
-    HAS_DATAHUB_SDK = True
-except ImportError:
-    HAS_DATAHUB_SDK = False
 
 try:
     from datahub.sdk import DataHubClient
@@ -23,6 +18,13 @@ except ImportError:
 from kronika.ports import DataHubWriter
 
 log = logging.getLogger("kronika.datahub.writer")
+
+# DataHub's GraphQL schema has no arbitrary/custom-aspect mutation path — `ingestProposal`
+# rejects any aspectName not registered in the entity model (verified: unregistered names
+# 422 with "Unknown aspect <name> for entity dataset"). `datasetProperties.customProperties`
+# is the standard registered escape hatch for free-form string metadata, so Kronika's
+# annotations and governance rules are both stored there, under distinct keys.
+_GOVERNANCE_RULES_PROPERTY_KEY = "kronikaGovernanceRules"
 
 
 class DataHubWriteError(Exception):
@@ -49,6 +51,7 @@ class HttpDataHubWriter(DataHubWriter):
         self.mock_mode = mock_mode
         self.incidents_written: list[dict[str, Any]] = []
         self.annotations_written: list[dict[str, Any]] = []
+        self.policy_rules_written: list[dict[str, Any]] = []
         self._seen_events: set[str] = set()
 
         if HAS_AGENT_CONTEXT and not mock_mode:
@@ -70,6 +73,74 @@ class HttpDataHubWriter(DataHubWriter):
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         return headers
+
+    def _get_dataset_properties(self, urn: str) -> dict[str, Any]:
+        """Read the current `datasetProperties` aspect via the OpenAPI v3 entity API.
+
+        Returns `{}` if the dataset has no `datasetProperties` aspect yet. Callers must
+        merge into this value and write the whole aspect back — `ingestProposal` UPSERT
+        replaces the aspect wholesale, so a naive write here would silently drop fields
+        (e.g. `name`) that another tool already set.
+        """
+        encoded = quote(urn, safe="")
+        url = f"{self.server_url}/openapi/v3/entity/dataset/{encoded}/datasetProperties"
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                resp = client.get(url, headers=self._headers())
+        except httpx.RequestError as exc:
+            log.error("_get_dataset_properties: connection failed | url=%s error=%s", url, exc)
+            raise DataHubWriteError(f"Connection failed: {exc}") from exc
+
+        if resp.status_code == 404:
+            return {}
+        if resp.status_code != 200:
+            log.error(
+                "_get_dataset_properties: read failed | status=%d body=%.200s",
+                resp.status_code,
+                resp.text,
+            )
+            raise DataHubWriteError(resp.text, resp.status_code)
+
+        value = resp.json().get("value")
+        return value if isinstance(value, dict) else {}
+
+    def _put_dataset_properties(self, urn: str, properties: dict[str, Any]) -> None:
+        url = f"{self.server_url}/aspects?action=ingestProposal"
+        proposal = {
+            "proposal": {
+                "entityUrn": urn,
+                "entityType": "dataset",
+                "aspectName": "datasetProperties",
+                "changeType": "UPSERT",
+                "aspect": {
+                    "contentType": "application/json",
+                    "value": json.dumps(properties),
+                },
+            }
+        }
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                resp = client.post(url, json=proposal, headers=self._headers())
+        except httpx.RequestError as exc:
+            log.error("_put_dataset_properties: connection failed | url=%s error=%s", url, exc)
+            raise DataHubWriteError(f"Connection failed: {exc}") from exc
+
+        if resp.status_code not in (200, 201):
+            log.error(
+                "_put_dataset_properties: write failed | status=%d body=%.200s",
+                resp.status_code,
+                resp.text,
+            )
+            raise DataHubWriteError(resp.text, resp.status_code)
+
+    def _merge_custom_properties(self, urn: str, updates: dict[str, str]) -> None:
+        """Read-modify-write `updates` into `datasetProperties.customProperties`,
+        preserving every other field already on the aspect (name, description, ...)."""
+        current = self._get_dataset_properties(urn)
+        custom_properties = dict(current.get("customProperties") or {})
+        custom_properties.update(updates)
+        current["customProperties"] = custom_properties
+        self._put_dataset_properties(urn, current)
 
     def create_incident(self, urn: str, title: str, description: str, event_id: str) -> None:
         dedup_key = f"incident:{event_id}:{urn}"
@@ -100,16 +171,9 @@ class HttpDataHubWriter(DataHubWriter):
             log.debug("create_incident: mock mode — skipping live write")
             return
 
-        if HAS_DATAHUB_SDK:
-            try:
-                emitter = DataHubRestEmitter(gms_server=self.server_url, token=self.token)
-                emitter.test_connection()
-            except Exception:
-                pass
-
         query = """
-        mutation createIncident($input: CreateIncidentInput!) {
-            createIncident(input: $input)
+        mutation raiseIncident($input: RaiseIncidentInput!) {
+            raiseIncident(input: $input)
         }
         """
         variables = {
@@ -134,7 +198,16 @@ class HttpDataHubWriter(DataHubWriter):
                         resp.text,
                     )
                     raise DataHubWriteError(resp.text, resp.status_code)
-                log.info("create_incident: written successfully | urn=%s", urn)
+                body = resp.json()
+                if body.get("errors"):
+                    log.error("create_incident: GraphQL errors | errors=%s", body["errors"])
+                    raise DataHubWriteError(str(body["errors"]))
+                incident_urn = body.get("data", {}).get("raiseIncident")
+                log.info(
+                    "create_incident: written successfully | urn=%s incident_urn=%s",
+                    urn,
+                    incident_urn,
+                )
         except httpx.RequestError as exc:
             log.error("create_incident: connection failed | url=%s error=%s", url, exc)
             raise DataHubWriteError(f"Connection failed: {exc}") from exc
@@ -170,34 +243,13 @@ class HttpDataHubWriter(DataHubWriter):
             log.debug("add_annotation: mock mode — skipping live write")
             return
 
-        url = f"{self.server_url}/api/v2/aspects?action=ingestProposal"
-        log.info("add_annotation: writing annotation to DataHub | url=%s urn=%s", url, urn)
-        proposal = {
-            "proposal": {
-                "entityUrn": urn,
-                "entityType": "dataset",
-                "aspectName": "kronikaAnnotation",
-                "changeType": "UPSERT",
-                "aspect": {
-                    "contentType": "application/json",
-                    "value": f'{{"key": "{key}", "value": "{value}", "eventId": "{event_id}"}}',
-                },
-            }
-        }
-        try:
-            with httpx.Client(timeout=self.timeout) as client:
-                resp = client.post(url, json=proposal, headers=self._headers())
-                if resp.status_code not in (200, 201):
-                    log.error(
-                        "add_annotation: write failed | status=%d body=%.200s",
-                        resp.status_code,
-                        resp.text,
-                    )
-                    raise DataHubWriteError(resp.text, resp.status_code)
-                log.info("add_annotation: written successfully | urn=%s key=%s", urn, key)
-        except httpx.RequestError as exc:
-            log.error("add_annotation: connection failed | url=%s error=%s", url, exc)
-            raise DataHubWriteError(f"Connection failed: {exc}") from exc
+        log.info(
+            "add_annotation: writing annotation to DataHub | urn=%s key=%s",
+            urn,
+            key,
+        )
+        self._merge_custom_properties(urn, {key: value})
+        log.info("add_annotation: written successfully | urn=%s key=%s", urn, key)
 
     def add_tag(self, urn: str, tag_urn: str = "urn:li:tag:critical") -> None:
         if self.mock_mode:
@@ -232,3 +284,60 @@ class HttpDataHubWriter(DataHubWriter):
                     log.info("add_tag: written successfully | urn=%s tag=%s", urn, tag_urn)
         except httpx.RequestError as exc:
             log.error("add_tag: connection failed | url=%s error=%s", url, exc)
+
+    def write_policy_rule(
+        self,
+        rule_id: str,
+        dimension: int,
+        predicate: str,
+        scope_urn: str,
+        glossary_urn: str | None = None,
+    ) -> None:
+        """Persist a governance rule to DataHub so every future reasoning cycle reads it
+        back via `DataHubReader.list_policy_rules()` — this is the write half of the
+        governance round-trip: an operator defines a rule once, through Kronika, and it
+        becomes a first-class DataHub artifact any other tool can also see."""
+        rule = {
+            "rule_id": rule_id,
+            "dimension": dimension,
+            "predicate": predicate,
+            "scope_urn": scope_urn,
+            "glossary_urn": glossary_urn,
+        }
+        self.policy_rules_written.append(rule)
+        log.info(
+            "write_policy_rule: rule queued | rule_id=%s scope_urn=%s predicate=%r",
+            rule_id,
+            scope_urn,
+            predicate,
+        )
+
+        if self.mock_mode:
+            log.debug("write_policy_rule: mock mode — skipping live write")
+            return
+
+        current = self._get_dataset_properties(scope_urn)
+        custom_properties = dict(current.get("customProperties") or {})
+        existing_raw = custom_properties.get(_GOVERNANCE_RULES_PROPERTY_KEY)
+        try:
+            existing_rules = json.loads(existing_raw) if existing_raw else []
+        except (ValueError, TypeError):
+            log.warning(
+                "write_policy_rule: existing governance rules JSON unparsable, "
+                "replacing | scope_urn=%s",
+                scope_urn,
+            )
+            existing_rules = []
+        if not isinstance(existing_rules, list):
+            existing_rules = []
+
+        merged_rules = [r for r in existing_rules if r.get("rule_id") != rule_id]
+        merged_rules.append(rule)
+        custom_properties[_GOVERNANCE_RULES_PROPERTY_KEY] = json.dumps(merged_rules)
+        current["customProperties"] = custom_properties
+        self._put_dataset_properties(scope_urn, current)
+        log.info(
+            "write_policy_rule: written successfully | rule_id=%s scope_urn=%s",
+            rule_id,
+            scope_urn,
+        )

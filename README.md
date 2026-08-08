@@ -132,3 +132,11 @@ Optional (defaults shown):
 | `KRONIKA_CONFIDENCE_THRESHOLD` | `0.90` | Minimum confidence for autonomous enrichment |
 | `KRONIKA_LLM_TIMEOUT_SECONDS` | `30` | LLM call timeout |
 | `DUCKDB_PATH` | `:memory:` | DuckDB cache path |
+| `KRONIKA_WRITER_MOCK_MODE` | `false` | If `true`, `HttpDataHubWriter` never performs live writes (used by the test suite to keep automated runs from mutating a real DataHub instance) |
+
+Governance rules read by the Verification Engine are themselves stored in DataHub —
+`POST /q/policy-rules` writes a rule to `datasetProperties.customProperties` on its
+scope asset (DataHub has no native concept of Kronika's business-rule predicates, so
+this is Kronika's own registered extension point, not a repurposed access-control
+API); `GET`-equivalent reads happen automatically on the next `list_policy_rules()`
+call, from any process, including a freshly started one.

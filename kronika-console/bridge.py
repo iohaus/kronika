@@ -57,6 +57,7 @@ class ConsoleBridge(QObject):
             server_url=settings.datahub_server_url,
             token=settings.datahub_token,
             timeout=settings.datahub_timeout_seconds,
+            mock_mode=settings.writer_mock_mode,
         )
         self._store = DuckDBEvidenceStore(settings.duckdb_path)
         self._engine = PublicEngine()

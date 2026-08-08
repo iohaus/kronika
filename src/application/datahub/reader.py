@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -9,6 +11,11 @@ from kronika.ports import DataHubReader
 from kronika.types import ValidationError
 
 log = logging.getLogger("kronika.datahub.reader")
+
+# Must match application.datahub.writer._GOVERNANCE_RULES_PROPERTY_KEY — governance rules
+# round-trip through datasetProperties.customProperties (DataHub's registered escape hatch
+# for free-form string metadata; unregistered custom aspect names are rejected outright).
+_GOVERNANCE_RULES_PROPERTY_KEY = "kronikaGovernanceRules"
 
 
 class DataHubAPIError(Exception):
@@ -297,10 +304,55 @@ class HttpDataHubReader(DataHubReader):
         log.debug("list_glossary_terms: live mode, returning empty")
         return []
 
+    def _get_custom_properties(self, urn: str) -> dict[str, str]:
+        """Read `datasetProperties.customProperties` for one dataset via OpenAPI v3.
+        Returns `{}` if the dataset has no `datasetProperties` aspect yet."""
+        encoded = quote(urn, safe="")
+        url = f"{self.server_url}/openapi/v3/entity/dataset/{encoded}/datasetProperties"
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                resp = client.get(url, headers=self._headers())
+        except httpx.RequestError as exc:
+            log.error("_get_custom_properties: connection failed | url=%s error=%s", url, exc)
+            raise DataHubAPIError(f"Connection failed: {exc}") from exc
+
+        if resp.status_code == 404:
+            return {}
+        if resp.status_code != 200:
+            log.error(
+                "_get_custom_properties: read failed | status=%d body=%.200s",
+                resp.status_code,
+                resp.text,
+            )
+            raise DataHubAPIError(resp.text, resp.status_code)
+
+        value = resp.json().get("value")
+        custom_properties = value.get("customProperties") if isinstance(value, dict) else None
+        return custom_properties if isinstance(custom_properties, dict) else {}
+
     def list_policy_rules(self) -> list[dict[str, Any]]:
         if self._mock_data is not None:
             rules = self._mock_data.get("policy_rules", [])
             log.debug("list_policy_rules: returned %d rules (mock)", len(rules))
             return rules
-        log.debug("list_policy_rules: live mode, returning empty")
-        return []
+
+        log.debug("list_policy_rules: live mode, reading governance rules from datasets")
+        rules: list[dict[str, Any]] = []
+        for dataset in self.list_datasets():
+            urn = dataset.get("urn")
+            if not isinstance(urn, str):
+                continue
+            custom_properties = self._get_custom_properties(urn)
+            raw_rules = custom_properties.get(_GOVERNANCE_RULES_PROPERTY_KEY)
+            if not raw_rules:
+                continue
+            try:
+                parsed = json.loads(raw_rules)
+            except (ValueError, TypeError):
+                log.warning("list_policy_rules: unparsable governance rules JSON | urn=%s", urn)
+                continue
+            if isinstance(parsed, list):
+                rules.extend(r for r in parsed if isinstance(r, dict))
+
+        log.info("list_policy_rules: returned %d rules (live)", len(rules))
+        return rules

@@ -13,6 +13,7 @@ from application.datahub.reader import HttpDataHubReader
 from application.datahub.writer import HttpDataHubWriter
 from application.llm.adapter import OpenAILLMAdapter
 from application.storage.cache import DuckDBEvidenceStore
+from kronika.dimensions import Dimension
 from kronika.engine import PublicEngine
 from kronika.logging import setup_logging
 from kronika.types import EventKind, MetadataEvent, ValidationError
@@ -30,6 +31,7 @@ _writer = HttpDataHubWriter(
     server_url=settings.datahub_server_url,
     token=settings.datahub_token,
     timeout=settings.datahub_timeout_seconds,
+    mock_mode=settings.writer_mock_mode,
 )
 _store = DuckDBEvidenceStore(settings.duckdb_path)
 _engine = PublicEngine()
@@ -153,6 +155,45 @@ def analyze_proposed_event(payload: dict[str, Any]) -> dict[str, Any]:
         "halt_set": list(decision.evidence.containment.halt_set),
         "actions_count": len(actions),
         "outcomes": {urn: o.recommendation.value for urn, o in decision.evidence.outcomes.items()},
+    }
+
+
+@app.post("/q/policy-rules")
+def create_policy_rule(payload: dict[str, Any]) -> dict[str, Any]:
+    rule_id = payload.get("rule_id")
+    predicate = payload.get("predicate")
+    raw_scope_urn = payload.get("scope_urn")
+    if not rule_id or not predicate or not raw_scope_urn:
+        raise HTTPException(
+            status_code=400, detail="rule_id, predicate, and scope_urn are required"
+        )
+
+    raw_dimension = payload.get("dimension", "COMPLIANCE")
+    try:
+        dimension = (
+            Dimension[raw_dimension] if isinstance(raw_dimension, str) else Dimension(raw_dimension)
+        )
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid dimension '{raw_dimension}'") from exc
+
+    scope_urn = _resolve_urn(raw_scope_urn, _engine._context)
+    glossary_urn = payload.get("glossary_urn")
+
+    _writer.write_policy_rule(
+        rule_id=rule_id,
+        dimension=int(dimension),
+        predicate=predicate,
+        scope_urn=scope_urn,
+        glossary_urn=glossary_urn,
+    )
+
+    return {
+        "status": "WRITTEN",
+        "rule_id": rule_id,
+        "dimension": dimension.name,
+        "predicate": predicate,
+        "scope_urn": scope_urn,
+        "glossary_urn": glossary_urn,
     }
 
 
