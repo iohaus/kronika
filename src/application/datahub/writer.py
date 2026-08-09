@@ -19,11 +19,7 @@ from kronika.ports import DataHubWriter
 
 log = logging.getLogger("kronika.datahub.writer")
 
-# DataHub's GraphQL schema has no arbitrary/custom-aspect mutation path — `ingestProposal`
-# rejects any aspectName not registered in the entity model (verified: unregistered names
-# 422 with "Unknown aspect <name> for entity dataset"). `datasetProperties.customProperties`
-# is the standard registered escape hatch for free-form string metadata, so Kronika's
-# annotations and governance rules are both stored there, under distinct keys.
+
 _GOVERNANCE_RULES_PROPERTY_KEY = "kronikaGovernanceRules"
 
 
@@ -75,13 +71,6 @@ class HttpDataHubWriter(DataHubWriter):
         return headers
 
     def _get_dataset_properties(self, urn: str) -> dict[str, Any]:
-        """Read the current `datasetProperties` aspect via the OpenAPI v3 entity API.
-
-        Returns `{}` if the dataset has no `datasetProperties` aspect yet. Callers must
-        merge into this value and write the whole aspect back — `ingestProposal` UPSERT
-        replaces the aspect wholesale, so a naive write here would silently drop fields
-        (e.g. `name`) that another tool already set.
-        """
         encoded = quote(urn, safe="")
         url = f"{self.server_url}/openapi/v3/entity/dataset/{encoded}/datasetProperties"
         try:
@@ -293,10 +282,6 @@ class HttpDataHubWriter(DataHubWriter):
         scope_urn: str,
         glossary_urn: str | None = None,
     ) -> None:
-        """Persist a governance rule to DataHub so every future reasoning cycle reads it
-        back via `DataHubReader.list_policy_rules()` — this is the write half of the
-        governance round-trip: an operator defines a rule once, through Kronika, and it
-        becomes a first-class DataHub artifact any other tool can also see."""
         rule = {
             "rule_id": rule_id,
             "dimension": dimension,

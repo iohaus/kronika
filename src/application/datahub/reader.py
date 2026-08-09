@@ -3,31 +3,31 @@ from __future__ import annotations
 import datetime
 import json
 import logging
-from typing import Any
-from urllib.parse import quote
+import queue
+import threading
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 import httpx
+from datahub.ingestion.graph.client import DatahubClientConfig
+from datahub.sdk import DataHubClient
+from datahub_agent_context import set_client
+from datahub_agent_context.mcp_tools import get_dataset_assertions, get_entities, search
 
 from kronika.ports import DataHubReader
 from kronika.types import ValidationError
 
 log = logging.getLogger("kronika.datahub.reader")
 
-# Must match application.datahub.writer._GOVERNANCE_RULES_PROPERTY_KEY — governance rules
-# round-trip through datasetProperties.customProperties (DataHub's registered escape hatch
-# for free-form string metadata; unregistered custom aspect names are rejected outright).
+_T = TypeVar("_T")
+
+
 _GOVERNANCE_RULES_PROPERTY_KEY = "kronikaGovernanceRules"
 
 
 def _column_lineage_for_edge(
     src_urn: str, fine_grained_lineages: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """Filter a destination entity's raw `fineGrainedLineages` entries down to only
-    those whose upstream schema fields belong to `src_urn` — DataHub's GraphQL
-    `SchemaFieldRef.urn` resolves to the owning *dataset* URN (not a combined
-    schemaField URN), with the column name in `path` alongside it. Matching on that
-    dataset URN correctly attributes a multi-upstream FGL entry to the right edge
-    even for future joins, not just this pipeline's current linear/fork topology."""
     mappings: list[dict[str, Any]] = []
     for fgl in fine_grained_lineages:
         if not isinstance(fgl, dict):
@@ -45,9 +45,6 @@ def _column_lineage_for_edge(
 
 
 def _is_view(entity: dict[str, Any]) -> bool:
-    """SQL views are ingested as `Dataset` entities alongside real tables, but they're
-    duplicative of the mart they mirror — excluded from Kronika's world model entirely
-    rather than given their own (redundant) lineage/reasoning treatment."""
     sub_types = entity.get("subTypes")
     type_names = sub_types.get("typeNames") if isinstance(sub_types, dict) else None
     return isinstance(type_names, list) and "View" in type_names
@@ -75,15 +72,6 @@ def capability_probe(reader: DataHubReader) -> None:
         raise ConfigurationError("list_entities") from exc
 
 
-try:
-    from datahub.sdk import DataHubClient
-    from datahub_agent_context import set_client
-
-    HAS_AGENT_CONTEXT = True
-except ImportError:
-    HAS_AGENT_CONTEXT = False
-
-
 class HttpDataHubReader(DataHubReader):
     def __init__(
         self,
@@ -96,11 +84,16 @@ class HttpDataHubReader(DataHubReader):
         self.token = token
         self.timeout = timeout
         self._mock_data = mock_data
+        self._sdk_client: DataHubClient | None = None
 
-        if HAS_AGENT_CONTEXT and self._mock_data is None:
+        if self._mock_data is None:
             try:
-                sdk_client = DataHubClient(server=self.server_url, token=self.token)
-                set_client(sdk_client)
+                self._sdk_client = DataHubClient(
+                    config=DatahubClientConfig(
+                        server=self.server_url, token=self.token, timeout_sec=self.timeout
+                    )
+                )
+                set_client(self._sdk_client)
                 log.info("HttpDataHubReader: DataHub Agent Context Kit bound successfully.")
             except Exception as exc:
                 log.warning("HttpDataHubReader: Agent Context Kit binding warning: %s", exc)
@@ -123,6 +116,37 @@ class HttpDataHubReader(DataHubReader):
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         return headers
+
+    def _call_with_timeout(self, func: Callable[..., _T], *args: Any, **kwargs: Any) -> _T:
+        result_queue: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
+        sdk_client = self._sdk_client
+
+        def _run() -> None:
+            try:
+                if sdk_client is not None:
+                    set_client(sdk_client)
+                result_queue.put(("ok", func(*args, **kwargs)))
+            except Exception as exc:
+                result_queue.put(("error", exc))
+
+        thread = threading.Thread(target=_run, daemon=True)
+        thread.start()
+        try:
+            status, value = result_queue.get(timeout=self.timeout)
+        except queue.Empty as exc:
+            func_name = getattr(func, "__name__", repr(func))
+            log.error(
+                "_call_with_timeout: hard timeout exceeded | func=%s timeout=%.1fs",
+                func_name,
+                self.timeout,
+            )
+            raise DataHubAPIError(
+                f"Agent Context Kit call '{func_name}' exceeded {self.timeout}s timeout"
+            ) from exc
+
+        if status == "error":
+            raise value
+        return value  # type: ignore[no-any-return]
 
     def _post_graphql(self, query: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
         if self._mock_data is not None:
@@ -154,6 +178,24 @@ class HttpDataHubReader(DataHubReader):
             log.error("_post_graphql: connection failed | url=%s error=%s", url, exc)
             raise DataHubAPIError(f"Connection failed: {exc}") from exc
 
+    def _get_dataset_entities(self) -> list[dict[str, Any]]:
+        found = self._call_with_timeout(
+            search, query="*", filter="entity_type = dataset", num_results=1000
+        )
+        urns = [
+            item["entity"]["urn"]
+            for item in found.get("searchResults", [])
+            if isinstance(item.get("entity"), dict) and item["entity"].get("urn")
+        ]
+        for urn in urns:
+            if not isinstance(urn, str) or not urn.startswith("urn:li:"):
+                raise ValidationError("reader.datasets.urn", "invalid_urn")
+
+        if not urns:
+            return []
+        entities = self._call_with_timeout(get_entities, urns)
+        return [e for e in entities if not _is_view(e)]
+
     def list_datasets(self) -> list[dict[str, Any]]:
         log.debug("list_datasets: fetching datasets")
         if self._mock_data is not None:
@@ -166,60 +208,29 @@ class HttpDataHubReader(DataHubReader):
             log.info("list_datasets: returned %d datasets (mock)", len(datasets))
             return datasets
 
-        query = """
-        query listDatasets {
-            searchAcrossEntities(input: {types: [DATASET], query: "*", start: 0, count: 1000}) {
-                searchResults {
-                    entity {
-                        urn
-                        type
-                        ... on Dataset {
-                            name
-                            platform { name }
-                            subTypes { typeNames }
-                            tags { tags { tag { urn name } } }
-                            ownership {
-                                owners {
-                                    owner {
-                                        ... on CorpUser { urn }
-                                        ... on CorpGroup { urn }
-                                    }
-                                }
-                            }
-                            domain { domain { urn } }
-                        }
-                    }
-                }
-            }
-        }
-        """
-        data = self._post_graphql(query)
-        search_res = data.get("searchAcrossEntities", {}).get("searchResults", [])
+        entities = self._get_dataset_entities()
         datasets: list[dict[str, Any]] = []
-        skipped_views = 0
 
-        for item in search_res:
-            entity = item.get("entity", {})
+        for entity in entities:
             urn = entity.get("urn")
             if not urn or not isinstance(urn, str) or not urn.startswith("urn:li:"):
                 raise ValidationError("reader.datasets.urn", "invalid_urn")
-
-            if _is_view(entity):
-                skipped_views += 1
-                continue
 
             tags: list[str] = []
             tags_obj = entity.get("tags")
             if isinstance(tags_obj, dict):
                 for t_item in tags_obj.get("tags", []):
-                    if isinstance(t_item, dict):
-                        t_name = (
-                            t_item.get("tag", {}).get("name")
-                            if isinstance(t_item.get("tag"), dict)
-                            else None
-                        )
-                        if t_name:
-                            tags.append(t_name)
+                    tag = t_item.get("tag") if isinstance(t_item, dict) else None
+                    if not isinstance(tag, dict):
+                        continue
+                    # get_entities() nests the name under properties; the raw GraphQL
+                    # query this replaced hoisted a top-level `name` alias instead —
+                    # accept either shape.
+                    t_name = tag.get("name")
+                    if not t_name and isinstance(tag.get("properties"), dict):
+                        t_name = tag["properties"].get("name")
+                    if t_name:
+                        tags.append(t_name)
 
             owners_obj = entity.get("ownership")
             owner_urn = None
@@ -246,11 +257,7 @@ class HttpDataHubReader(DataHubReader):
                 }
             )
 
-        log.info(
-            "list_datasets: returned %d datasets (live) | skipped_views=%d",
-            len(datasets),
-            skipped_views,
-        )
+        log.info("list_datasets: returned %d datasets (live)", len(datasets))
         return datasets
 
     def list_lineage_edges(self) -> list[dict[str, Any]]:
@@ -259,7 +266,6 @@ class HttpDataHubReader(DataHubReader):
             edges = self._mock_data.get("edges", [])
             log.info("list_lineage_edges: returned %d edges (mock)", len(edges))
             return edges
-
         query = """
         query getLineage {
             searchAcrossEntities(input: {types: [DATASET], query: "*", start: 0, count: 1000}) {
@@ -360,30 +366,15 @@ class HttpDataHubReader(DataHubReader):
             terms = self._mock_data.get("glossary_terms", [])
             log.debug("list_glossary_terms: returned %d terms (mock)", len(terms))
             return terms
-
-        query = """
-        query listGlossaryTerms {
-            searchAcrossEntities(
-                input: {types: [GLOSSARY_TERM], query: "*", start: 0, count: 1000}
-            ) {
-                searchResults {
-                    entity {
-                        urn
-                        ... on GlossaryTerm {
-                            hierarchicalName
-                            properties { name description }
-                        }
-                    }
-                }
-            }
-        }
-        """
-        data = self._post_graphql(query)
-        search_res = data.get("searchAcrossEntities", {}).get("searchResults", [])
+        found = self._call_with_timeout(
+            search, query="*", filter="entity_type = glossary_term", num_results=1000
+        )
         terms: list[dict[str, Any]] = []
 
-        for item in search_res:
-            entity = item.get("entity", {})
+        for item in found.get("searchResults", []):
+            entity = item.get("entity")
+            if not isinstance(entity, dict):
+                continue
             urn = entity.get("urn")
             if not urn or not isinstance(urn, str):
                 continue
@@ -395,38 +386,26 @@ class HttpDataHubReader(DataHubReader):
                 name = properties.get("name")
                 description = properties.get("description")
             if not name:
-                name = entity.get("hierarchicalName")
+                name = entity.get("name")
 
             terms.append({"urn": urn, "name": name, "description": description})
 
         log.info("list_glossary_terms: returned %d terms (live)", len(terms))
         return terms
 
-    def _get_custom_properties(self, urn: str) -> dict[str, str]:
-        """Read `datasetProperties.customProperties` for one dataset via OpenAPI v3.
-        Returns `{}` if the dataset has no `datasetProperties` aspect yet."""
-        encoded = quote(urn, safe="")
-        url = f"{self.server_url}/openapi/v3/entity/dataset/{encoded}/datasetProperties"
-        try:
-            with httpx.Client(timeout=self.timeout) as client:
-                resp = client.get(url, headers=self._headers())
-        except httpx.RequestError as exc:
-            log.error("_get_custom_properties: connection failed | url=%s error=%s", url, exc)
-            raise DataHubAPIError(f"Connection failed: {exc}") from exc
-
-        if resp.status_code == 404:
+    @staticmethod
+    def _custom_properties_of(entity: dict[str, Any]) -> dict[str, str]:
+        """`get_entities()` returns `properties.customProperties` as a
+        `[{"key": ..., "value": ...}, ...]` list, not a flat map."""
+        properties = entity.get("properties")
+        raw = properties.get("customProperties") if isinstance(properties, dict) else None
+        if not isinstance(raw, list):
             return {}
-        if resp.status_code != 200:
-            log.error(
-                "_get_custom_properties: read failed | status=%d body=%.200s",
-                resp.status_code,
-                resp.text,
-            )
-            raise DataHubAPIError(resp.text, resp.status_code)
-
-        value = resp.json().get("value")
-        custom_properties = value.get("customProperties") if isinstance(value, dict) else None
-        return custom_properties if isinstance(custom_properties, dict) else {}
+        return {
+            item["key"]: item["value"]
+            for item in raw
+            if isinstance(item, dict) and isinstance(item.get("key"), str)
+        }
 
     def list_policy_rules(self) -> list[dict[str, Any]]:
         if self._mock_data is not None:
@@ -436,11 +415,11 @@ class HttpDataHubReader(DataHubReader):
 
         log.debug("list_policy_rules: live mode, reading governance rules from datasets")
         rules: list[dict[str, Any]] = []
-        for dataset in self.list_datasets():
-            urn = dataset.get("urn")
+        for entity in self._get_dataset_entities():
+            urn = entity.get("urn")
             if not isinstance(urn, str):
                 continue
-            custom_properties = self._get_custom_properties(urn)
+            custom_properties = self._custom_properties_of(entity)
             raw_rules = custom_properties.get(_GOVERNANCE_RULES_PROPERTY_KEY)
             if not raw_rules:
                 continue
@@ -456,92 +435,45 @@ class HttpDataHubReader(DataHubReader):
         return rules
 
     def list_assertions(self) -> list[dict[str, Any]]:
-        """Real DataHub assertion run results — the perception source for
-        `EventListener.poll_events()`. Kept separate from `list_datasets()`: it's only
-        needed by the poller, not by every `build_context()` call on the hot path."""
         if self._mock_data is not None:
             assertions = self._mock_data.get("assertions", [])
             log.debug("list_assertions: returned %d assertions (mock)", len(assertions))
             return assertions
 
-        query = """
-        query listAssertions {
-            searchAcrossEntities(
-                input: {types: [ASSERTION], query: "*", start: 0, count: 200}
-            ) {
-                searchResults {
-                    entity {
-                        urn
-                        ... on Assertion {
-                            info {
-                                customAssertion { field { path } }
-                            }
-                            dataset { urn }
-                            runEvents(status: COMPLETE, limit: 5) {
-                                runEvents {
-                                    timestampMillis
-                                    result { type rowCount unexpectedCount severity }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        """
-        data = self._post_graphql(query)
-        search_res = data.get("searchAcrossEntities", {}).get("searchResults", [])
         results: list[dict[str, Any]] = []
-
-        for item in search_res:
-            entity = item.get("entity", {})
-            dataset_obj = entity.get("dataset")
-            dataset_urn = dataset_obj.get("urn") if isinstance(dataset_obj, dict) else None
-            if not dataset_urn:
+        for dataset in self.list_datasets():
+            dataset_urn = dataset.get("urn")
+            if not isinstance(dataset_urn, str):
                 continue
 
-            field_path = None
-            info = entity.get("info")
-            if isinstance(info, dict):
-                custom_assertion = info.get("customAssertion")
-                if isinstance(custom_assertion, dict) and isinstance(
-                    custom_assertion.get("field"), dict
-                ):
-                    field_path = custom_assertion["field"].get("path")
-
-            run_events_obj = entity.get("runEvents")
-            run_events = (
-                run_events_obj.get("runEvents", []) if isinstance(run_events_obj, dict) else []
+            response = self._call_with_timeout(
+                get_dataset_assertions, dataset_urn, run_events_count=1
             )
-            for run in run_events:
-                if not isinstance(run, dict):
-                    continue
-                result = run.get("result")
-                if not isinstance(result, dict):
+            if not response.get("success"):
+                continue
+            for assertion in response.get("data", {}).get("assertions", []):
+                if not isinstance(assertion, dict):
                     continue
 
-                result_type = result.get("type")
-                if result_type == "FAILURE":
-                    status = "FAILED"
-                elif result_type == "SUCCESS":
-                    status = "PASSED"
-                else:
-                    status = result_type
+                result_type = assertion.get("latestResultType")
+                status = "FAILED" if result_type == "FAILURE" else "PASSED"
 
-                ts_ms = run.get("timestampMillis")
+                run_history = assertion.get("runHistory") or []
+                ts_ms = run_history[0].get("timestampMillis") if run_history else None
                 occurred_at = (
                     datetime.datetime.fromtimestamp(ts_ms / 1000, tz=datetime.UTC).isoformat()
                     if isinstance(ts_ms, int)
                     else None
                 )
 
+                column = assertion.get("column")
                 results.append(
                     {
                         "dataset_urn": dataset_urn,
                         "status": status,
                         "occurred_at": occurred_at,
-                        "columns": [field_path] if field_path else None,
-                        "severity": "critical" if result.get("severity") == "HIGH" else "warning",
+                        "columns": [column] if column else None,
+                        "severity": "critical" if status == "FAILED" else "warning",
                     }
                 )
 

@@ -25,26 +25,29 @@ without a reason a human can check.
 ## Features
 
 - **Precision containment, not a circuit breaker.** The same quality event can leave
-  one downstream mart untouched while flagging another for containment because
-  Kronika traces the actual lineage path and column-level relevance, not just "is
-  this downstream at all."
-- **Lives on DataHub's real context graph.** Reads lineage, tags, ownership, and
-  glossary terms straight from a running DataHub instance via the DataHub Agent
-  Context Kit and GraphQL no separate database, no static export to go stale.
+  one downstream mart untouched while flagging another for containment — because
+  Kronika traces real column-to-column DataHub lineage, including renamed columns,
+  not just "is this downstream at all."
+- **Reads DataHub through its own Agent Context Kit.** Dataset discovery, tags,
+  ownership, glossary terms, and quality assertions all go through the kit's own
+  `search`/`get_entities`/`get_dataset_assertions` tool functions — the same SDK
+  pattern the kit documents for custom backend agents — not a competing client.
+  Bulk column-level lineage is the one deliberate exception, read via DataHub's raw
+  GraphQL API directly, since the kit only exposes that data per-column.
 - **Writes decisions back into DataHub, not just a dashboard.** Incidents and tags
-  land as first-class DataHub entities visible in DataHub's own UI, inherited by
+  land as first-class DataHub entities — visible in DataHub's own UI, inherited by
   every other tool and teammate on your stack, the moment they're created.
 - **Governance rules that live in the graph, not in Kronika.** Define a policy once
-  and it's written into DataHub itself as real metadata it survives a restart, and
+  and it's written into DataHub itself as real metadata — it survives a restart, and
   any other tool inspecting that dataset can see it, with or without Kronika running.
 - **Ask "is this safe?" before you touch anything.** Run a proposed schema change
-  through the same reasoning engine first see exactly what would be affected,
+  through the same reasoning engine first — see exactly what would be affected,
   without a single row of data actually changing.
 - **Humans stay in the loop.** High-impact actions like a pipeline halt wait for
-  explicit approval; Kronika recommends, evidence in hand it doesn't act alone on
+  explicit approval; Kronika recommends, evidence in hand — it doesn't act alone on
   the decisions that matter most.
 - **Explainable by design.** Every decision is deterministic and reproducible, with
-  a full evidence trail the same event always produces the same answer, and you
+  a full evidence trail — the same event always produces the same answer, and you
   can always see why.
 
 ---
