@@ -58,11 +58,13 @@ class TestAgentRuntimeEpisode:
 class TestEventListener:
     def test_poll_events_deduplication(self) -> None:
         seed = get_healthcare_dataset()
-        seed["datasets"][0]["assertions"] = [
+        seed["assertions"] = [
             {
+                "dataset_urn": _urn("raw_patients"),
                 "status": "FAILED",
                 "columns": ["billing_amount"],
                 "occurred_at": "2026-07-25T19:00:00Z",
+                "severity": "critical",
             }
         ]
         reader = HttpDataHubReader(mock_data=seed)
@@ -71,9 +73,39 @@ class TestEventListener:
         events1 = listener.poll_events()
         assert len(events1) == 1
         assert events1[0].source_urn == _urn("raw_patients")
+        assert events1[0].payload_value("source") == "datahub_assertion"
 
         events2 = listener.poll_events()
         assert len(events2) == 0
+
+    def test_poll_events_to_pending_action_end_to_end(self) -> None:
+        """A real DataHub-detected assertion failure, polled with no human-typed
+        claim involved, flows all the way to a HALT_PIPELINE pending action."""
+        seed = get_healthcare_dataset()
+        seed["assertions"] = [
+            {
+                "dataset_urn": _urn("raw_patients"),
+                "status": "FAILED",
+                "columns": ["billing_amount"],
+                "occurred_at": "2026-07-25T20:00:00Z",
+                "severity": "critical",
+            }
+        ]
+        reader = HttpDataHubReader(mock_data=seed)
+        writer = HttpDataHubWriter(mock_mode=True)
+        store = DuckDBEvidenceStore(":memory:")
+        engine = PublicEngine()
+        runner = DecisionEpisodeRunner(engine, reader, writer, store)
+        listener = EventListener(reader)
+
+        events = listener.poll_events()
+        assert len(events) == 1
+
+        decision, _actions = runner.run_episode(events[0])
+        assert decision.event.source_urn == _urn("raw_patients")
+
+        pending = store.list_pending_actions()
+        assert any(p["kind"] == "HALT_PIPELINE" for p in pending)
 
 
 class TestProductAPIEndpoints:
@@ -107,14 +139,13 @@ class TestProductAPIEndpoints:
         assert resp.status_code == 400
 
     def test_pending_actions_workflow(self, test_client: TestClient) -> None:
-        wh_payload = {
-            "event_id": "wh-test-999",
-            "event_type": "QUALITY_OBSERVATION",
-            "source_urn": _urn("raw_patients"),
-            "columns": ["billing_amount"],
-        }
-        wh_resp = test_client.post("/webhooks/datahub", json=wh_payload)
-        assert wh_resp.status_code == 200
+        # Seeds the pending queue via /q/poll-now against the real local DataHub
+        # instance, which must have a real FAILED assertion authored on
+        # raw_patients.billing_amount (tooling/kronika-tools/.../add_assertions.py) —
+        # no manually-typed claim is involved, this exercises the real detection path.
+        poll_resp = test_client.post("/q/poll-now")
+        assert poll_resp.status_code == 200
+        assert poll_resp.json()["episodes_processed"] >= 1
 
         pending_resp = test_client.get("/q/pending")
         assert pending_resp.status_code == 200
@@ -125,7 +156,3 @@ class TestProductAPIEndpoints:
         approve_resp = test_client.post(f"/q/pending/{action_id}/approve")
         assert approve_resp.status_code == 200
         assert approve_resp.json()["status"] == "APPROVED"
-
-    def test_webhook_malformed_returns_400(self, test_client: TestClient) -> None:
-        resp = test_client.post("/webhooks/datahub", json={"source_urn": "bad-urn"})
-        assert resp.status_code == 400

@@ -42,19 +42,26 @@ def get_healthcare_dataset() -> dict[str, list[dict[str, Any]]]:
                 "src": _urn("raw_patients"),
                 "dst": _urn("staging_patients"),
                 "kind": "IDENTITY",
-                "columns": None,
+                "column_lineage": [
+                    {"dst_column": "billing_amount", "src_columns": ["billing_amount"]},
+                    {"dst_column": "patient_id", "src_columns": ["patient_id"]},
+                ],
             },
             {
                 "src": _urn("staging_patients"),
                 "dst": _urn("mart_billing"),
                 "kind": "PROJECTION",
-                "columns": ["billing_amount"],
+                "column_lineage": [
+                    {"dst_column": "billing_amount", "src_columns": ["billing_amount"]},
+                ],
             },
             {
                 "src": _urn("staging_patients"),
                 "dst": _urn("mart_demographics"),
                 "kind": "PROJECTION",
-                "columns": ["patient_id"],
+                "column_lineage": [
+                    {"dst_column": "patient_id", "src_columns": ["patient_id"]},
+                ],
             },
         ],
         "glossary_terms": [

@@ -60,14 +60,16 @@ class DecisionEpisodeRunner:
             autonomous_count,
         )
 
-        # Generate audience-tailored explanations and surface them in the log so
-        # they are always observable in kronika.log regardless of UI state.
+        # Generate audience-tailored explanations, persist them, and surface them in
+        # the log so they are always observable in kronika.log regardless of UI state.
         for audience in ("ENGINEER", "OWNER", "EXECUTIVE"):
-            explanation = self.llm.explain(decision.evidence, audience=audience)
+            explanation, degraded = self.llm.explain(decision.evidence, audience=audience)
+            self.store.save_explanation(event.event_id, audience, explanation, degraded)
             indented = "\n\t".join(explanation.splitlines())
             log.info(
-                "run_episode: llm_rationale [%s] event_id=%s\n\n\t%s\n",
+                "run_episode: llm_rationale [%s]%s event_id=%s\n\n\t%s\n",
                 audience,
+                " (DEGRADED/TEMPLATE)" if degraded else "",
                 event.event_id,
                 indented,
             )
@@ -81,19 +83,26 @@ class DecisionEpisodeRunner:
                     action.target_urn,
                 )
                 self.store.save_pending_action(action, event.event_id)
+            elif action.kind == "ADD_MONITORING_TAG":
+                log.info(
+                    "run_episode: executing autonomous annotation | action_id=%s target_urn=%s",
+                    action.action_id,
+                    action.target_urn,
+                )
+                self.writer.add_annotation(
+                    urn=action.target_urn,
+                    key="kronika_monitoring",
+                    value="true",
+                    event_id=event.event_id,
+                )
             else:
-                if action.kind == "ADD_MONITORING_TAG":
-                    log.info(
-                        "run_episode: executing autonomous annotation | action_id=%s target_urn=%s",
-                        action.action_id,
-                        action.target_urn,
-                    )
-                    self.writer.add_annotation(
-                        urn=action.target_urn,
-                        key="kronika_monitoring",
-                        value="true",
-                        event_id=event.event_id,
-                    )
+                log.warning(
+                    "run_episode: unhandled autonomous action kind — no execution handler "
+                    "defined, action will not be applied | action_id=%s kind=%s target_urn=%s",
+                    action.action_id,
+                    action.kind,
+                    action.target_urn,
+                )
 
         log.debug("run_episode: persisting evidence record | event_id=%s", event.event_id)
         self.store.save(decision.evidence)

@@ -6,8 +6,8 @@ from hypothesis import strategies as st
 from kronika.check.audit import DataAudit
 from kronika.data_context import DataContext
 from kronika.dimensions import Dimension, StatusLevel
-from kronika.impact import ImpactEngine, _column_relevant, _propagate_one_dim
-from kronika.types import DataAsset, EdgeKind, EventKind, LineageEdge, MetadataEvent
+from kronika.impact import ImpactEngine, _propagate_one_dim, _translate_columns
+from kronika.types import ColumnLineage, DataAsset, EdgeKind, EventKind, LineageEdge, MetadataEvent
 
 _P = "urn:li:dataPlatform:hive"
 
@@ -39,7 +39,15 @@ def _event(
 def _edge(
     src: str, dst: str, kind: EdgeKind = EdgeKind.IDENTITY, columns: frozenset[str] | None = None
 ) -> LineageEdge:
-    return LineageEdge(src=_urn(src), dst=_urn(dst), kind=kind, columns=columns)
+    """`columns` is a flat set of self-mapping column names (same name upstream and
+    downstream) — a convenience wrapper over the real per-pair `ColumnLineage` shape,
+    sufficient for tests that don't specifically exercise a rename."""
+    column_lineage = (
+        frozenset(ColumnLineage(dst_column=c, src_columns=frozenset({c})) for c in columns)
+        if columns is not None
+        else None
+    )
+    return LineageEdge(src=_urn(src), dst=_urn(dst), kind=kind, column_lineage=column_lineage)
 
 
 _ENGINE = ImpactEngine()
@@ -60,7 +68,12 @@ def _healthcare_context() -> DataContext:
             _asset("mart_demographics", tags=frozenset({"internal"})),
         ],
         edges=[
-            _edge("raw_patients", "staging_patients", EdgeKind.IDENTITY),
+            _edge(
+                "raw_patients",
+                "staging_patients",
+                EdgeKind.IDENTITY,
+                frozenset({"billing_amount", "patient_id"}),
+            ),
             _edge(
                 "staging_patients",
                 "mart_billing",
@@ -78,23 +91,47 @@ def _healthcare_context() -> DataContext:
     )
 
 
-class TestColumnRelevance:
-    def test_both_none_is_relevant(self) -> None:
-        assert _column_relevant(None, None) is True
+def _mapping(dst: str, *src: str) -> ColumnLineage:
+    return ColumnLineage(dst_column=dst, src_columns=frozenset(src))
 
-    def test_src_none_is_relevant(self) -> None:
-        assert _column_relevant(None, frozenset({"col_a"})) is True
 
-    def test_edge_none_is_relevant(self) -> None:
-        assert _column_relevant(frozenset({"col_a"}), None) is True
+class TestTranslateColumns:
+    def test_unknown_upstream_stays_unknown(self) -> None:
+        assert _translate_columns(None, frozenset({_mapping("y", "x")})) is None
 
-    def test_disjoint_sets_not_relevant(self) -> None:
-        assert _column_relevant(frozenset({"col_a"}), frozenset({"col_b"})) is False
+    def test_proven_irrelevant_upstream_stays_irrelevant(self) -> None:
+        assert _translate_columns(frozenset(), frozenset({_mapping("y", "x")})) == frozenset()
 
-    def test_overlapping_is_relevant(self) -> None:
-        assert (
-            _column_relevant(frozenset({"col_a", "col_b"}), frozenset({"col_b", "col_c"})) is True
+    def test_proven_irrelevant_not_widened_by_missing_lineage(self) -> None:
+        assert _translate_columns(frozenset(), None) == frozenset()
+
+    def test_missing_lineage_widens_relevant_upstream_to_unknown(self) -> None:
+        assert _translate_columns(frozenset({"billing_amount"}), None) is None
+
+    def test_real_mapping_translates_matching_column(self) -> None:
+        translated = _translate_columns(
+            frozenset({"billing_amount"}), frozenset({_mapping("billing_amount", "billing_amount")})
         )
+        assert translated == frozenset({"billing_amount"})
+
+    def test_real_mapping_excludes_non_matching_column(self) -> None:
+        translated = _translate_columns(
+            frozenset({"patient_id"}), frozenset({_mapping("billing_amount", "billing_amount")})
+        )
+        assert translated == frozenset()
+
+    def test_real_mapping_translates_renamed_column(self) -> None:
+        translated = _translate_columns(
+            frozenset({"gender_clean"}), frozenset({_mapping("gender", "gender_clean")})
+        )
+        assert translated == frozenset({"gender"})
+
+    def test_real_mapping_handles_n_to_one_derivation(self) -> None:
+        translated = _translate_columns(
+            frozenset({"discharge_date"}),
+            frozenset({_mapping("length_of_stay_days", "date_of_admission", "discharge_date")}),
+        )
+        assert translated == frozenset({"length_of_stay_days"})
 
 
 class TestPropagateOneDim:
@@ -104,7 +141,6 @@ class TestPropagateOneDim:
             EdgeKind.IDENTITY,
             StatusLevel.CRITICAL,
             StatusLevel.HEALTHY,
-            None,
             None,
         )
         assert result == StatusLevel.CRITICAL
@@ -116,7 +152,6 @@ class TestPropagateOneDim:
             StatusLevel.HEALTHY,
             StatusLevel.DEGRADED,
             None,
-            None,
         )
         assert result == StatusLevel.DEGRADED
 
@@ -127,7 +162,6 @@ class TestPropagateOneDim:
             StatusLevel.CRITICAL,
             StatusLevel.HEALTHY,
             frozenset({"billing_amount"}),
-            frozenset({"billing_amount"}),
         )
         assert result == StatusLevel.CRITICAL
 
@@ -137,8 +171,7 @@ class TestPropagateOneDim:
             EdgeKind.PROJECTION,
             StatusLevel.CRITICAL,
             StatusLevel.HEALTHY,
-            frozenset({"billing_amount"}),
-            frozenset({"patient_id"}),
+            frozenset(),
         )
         from kronika.impact import _NO_CHANGE
 
@@ -151,7 +184,6 @@ class TestPropagateOneDim:
             StatusLevel.CRITICAL,
             StatusLevel.HEALTHY,
             None,
-            None,
         )
         assert result == StatusLevel.DEGRADED
 
@@ -162,7 +194,6 @@ class TestPropagateOneDim:
             StatusLevel.DEGRADED,
             StatusLevel.HEALTHY,
             None,
-            None,
         )
         assert result == StatusLevel.DEGRADED
 
@@ -172,7 +203,6 @@ class TestPropagateOneDim:
             EdgeKind.AGGREGATION,
             StatusLevel.HEALTHY,
             StatusLevel.HEALTHY,
-            None,
             None,
         )
         assert result == StatusLevel.DEGRADED
@@ -186,7 +216,6 @@ class TestPropagateOneDim:
             StatusLevel.CRITICAL,
             StatusLevel.HEALTHY,
             None,
-            None,
         )
         assert result is _NO_CHANGE
 
@@ -198,7 +227,6 @@ class TestPropagateOneDim:
             EdgeKind.IDENTITY,
             StatusLevel.CRITICAL,
             StatusLevel.HEALTHY,
-            None,
             None,
         )
         assert result is _NO_CHANGE
@@ -316,6 +344,91 @@ class TestImpactEngineColumnLevel:
         )
         _, result = _ENGINE.analyze(ctx, evt)
         assert _urn("dst") in result.changed
+
+
+class TestColumnTranslationRegression:
+    """These three prove the original bug (a same-name coincidence heuristic that
+    could produce a false CLEAR on a renamed column) is actually fixed, not just
+    that the unit-level translation function looks right in isolation."""
+
+    def test_renamed_column_propagates_across_multiple_hops(self) -> None:
+        # A --[real: x -> y]--> B --[real: y -> z]--> C. Event implicates "x" on A.
+        # Under the OLD flat same-name check this would false-CLEAR at C, since
+        # event.columns={"x"} never literally matches C's own column name "z".
+        a, b, c = _urn("a"), _urn("b"), _urn("c")
+        ctx = DataContext.build(
+            assets=[DataAsset.healthy(u) for u in (a, b, c)],
+            edges=[
+                LineageEdge(a, b, EdgeKind.PROJECTION, frozenset({_mapping("y", "x")})),
+                LineageEdge(b, c, EdgeKind.PROJECTION, frozenset({_mapping("z", "y")})),
+            ],
+            rules=[],
+        )
+        evt = MetadataEvent(
+            event_id="e1",
+            kind=EventKind.QUALITY_OBSERVATION,
+            source_urn=a,
+            columns=frozenset({"x"}),
+            payload=(),
+            occurred_at="2026-07-25T10:00:00Z",
+        )
+        _, result = _ENGINE.analyze(ctx, evt)
+        assert c in result.changed
+        assert result.changed[c].after.get_status(Dimension.INTEGRITY) == StatusLevel.CRITICAL
+
+    def test_missing_lineage_widens_when_upstream_relevant(self) -> None:
+        # A --[real: excludes "billing_amount"]--> B --[column_lineage=None]--> C.
+        # Event implicates a column that IS mapped through to B (so B has something
+        # relevant), but B->C has no authored lineage at all. C must still be
+        # touched — conservative widening, never a silent false CLEAR.
+        a, b, c = _urn("a"), _urn("b"), _urn("c")
+        ctx = DataContext.build(
+            assets=[DataAsset.healthy(u) for u in (a, b, c)],
+            edges=[
+                LineageEdge(
+                    a, b, EdgeKind.PROJECTION, frozenset({_mapping("kept", "billing_amount")})
+                ),
+                LineageEdge(b, c, EdgeKind.PROJECTION, None),
+            ],
+            rules=[],
+        )
+        evt = MetadataEvent(
+            event_id="e1",
+            kind=EventKind.QUALITY_OBSERVATION,
+            source_urn=a,
+            columns=frozenset({"billing_amount"}),
+            payload=(),
+            occurred_at="2026-07-25T10:00:00Z",
+        )
+        _, result = _ENGINE.analyze(ctx, evt)
+        assert c in result.changed
+
+    def test_missing_lineage_stays_clear_when_upstream_proven_irrelevant(self) -> None:
+        # Same shape, but the event's column does NOT appear in A->B's real mapping
+        # at all, so B is proven irrelevant. B->C still lacks lineage. C must NOT be
+        # touched — a missing edge elsewhere in the graph shouldn't force a spurious
+        # over-propagation past a node real lineage already cleared.
+        a, b, c = _urn("a"), _urn("b"), _urn("c")
+        ctx = DataContext.build(
+            assets=[DataAsset.healthy(u) for u in (a, b, c)],
+            edges=[
+                LineageEdge(
+                    a, b, EdgeKind.PROJECTION, frozenset({_mapping("kept", "unrelated_column")})
+                ),
+                LineageEdge(b, c, EdgeKind.PROJECTION, None),
+            ],
+            rules=[],
+        )
+        evt = MetadataEvent(
+            event_id="e1",
+            kind=EventKind.QUALITY_OBSERVATION,
+            source_urn=a,
+            columns=frozenset({"billing_amount"}),
+            payload=(),
+            occurred_at="2026-07-25T10:00:00Z",
+        )
+        _, result = _ENGINE.analyze(ctx, evt)
+        assert c not in result.changed
 
 
 class TestImpactEngineDiamond:

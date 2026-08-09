@@ -9,3 +9,8 @@ import os
 # annotations, and tags into whatever DataHub instance DATAHUB_SERVER_URL points at
 # on every test run.
 os.environ.setdefault("KRONIKA_WRITER_MOCK_MODE", "true")
+
+# Same reasoning: startup_event() would otherwise start a real background thread
+# polling live DataHub every KRONIKA_POLL_INTERVAL_SECONDS during every test run
+# that boots the FastAPI app (TestClient(app) does trigger startup_event()).
+os.environ.setdefault("KRONIKA_ENABLE_POLLING", "false")

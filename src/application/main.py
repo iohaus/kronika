@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import datetime
+import logging
+import threading
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Response
 
+from application.agent.listener import EventListener
 from application.agent.runtime import DecisionEpisodeRunner
 from application.config import settings
 from application.datahub.builder import build_context
@@ -19,6 +22,8 @@ from kronika.logging import setup_logging
 from kronika.types import EventKind, MetadataEvent, ValidationError
 
 setup_logging(log_dir=Path(__file__).resolve().parent.parent.parent / "logs")
+
+log = logging.getLogger("kronika.application.main")
 
 app = FastAPI(title="Kronika Product API", version="0.1.0")
 
@@ -42,18 +47,57 @@ _llm = OpenAILLMAdapter(
     timeout=settings.llm_timeout_seconds,
 )
 _runner = DecisionEpisodeRunner(_engine, _reader, _writer, _store, llm=_llm)
+_listener = EventListener(_reader)
 _last_rebuild = datetime.datetime.now(datetime.UTC).isoformat()
+
+# Guards every `run_episode()` call site — the background poller and
+# `/q/poll-now` can both invoke it, and both share the same `_engine`/`_store`
+# singletons, so they must not interleave.
+_episode_lock = threading.Lock()
+_poll_stop = threading.Event()
+_poll_thread: threading.Thread | None = None
+
+
+def _run_polling_loop() -> None:
+    log.info("polling_loop: started | interval_seconds=%.1f", settings.poll_interval_seconds)
+    while not _poll_stop.is_set():
+        try:
+            events = _listener.poll_events()
+            for evt in events:
+                log.info(
+                    "polling_loop: real DataHub assertion failure detected | "
+                    "event_id=%s source_urn=%s columns=%s",
+                    evt.event_id,
+                    evt.source_urn,
+                    evt.columns,
+                )
+                with _episode_lock:
+                    _runner.run_episode(evt)
+        except Exception:
+            log.exception("polling_loop: poll cycle failed, will retry next interval")
+        _poll_stop.wait(settings.poll_interval_seconds)
 
 
 @app.on_event("startup")
 def startup_event() -> None:
-    global _last_rebuild
+    global _last_rebuild, _poll_thread
     from application.datahub.reader import capability_probe
 
     capability_probe(_reader)
     ctx = build_context(_reader, max_size=settings.max_world_size)
     _engine.observe(ctx)
     _last_rebuild = datetime.datetime.now(datetime.UTC).isoformat()
+
+    if settings.enable_background_polling:
+        _poll_thread = threading.Thread(
+            target=_run_polling_loop, name="kronika-datahub-poller", daemon=True
+        )
+        _poll_thread.start()
+
+
+@app.on_event("shutdown")
+def shutdown_event() -> None:
+    _poll_stop.set()
 
 
 @app.get("/q/status")
@@ -91,6 +135,7 @@ def get_episode(event_id: str) -> dict[str, Any]:
             "halt_set": list(ev.containment.halt_set),
             "objective": ev.containment.objective,
         },
+        "explanations": _store.load_explanations(event_id),
     }
 
 
@@ -269,48 +314,34 @@ def reject_pending_action(action_id: str) -> dict[str, Any]:
     return resolved
 
 
-@app.post("/webhooks/datahub")
-async def datahub_webhook(request: Request) -> dict[str, Any]:
-    try:
-        payload = await request.json()
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail="Invalid JSON payload") from exc
+@app.post("/q/poll-now")
+def poll_now() -> dict[str, Any]:
+    """Synchronously re-run the same real DataHub assertion check the background
+    poller runs automatically — on demand, for controlling detection timing (e.g.
+    during a demo). Takes no body: it re-invokes the real check, it does not accept
+    a claimed event, so it can't be used to inject a fake one."""
+    with _episode_lock:
+        events = _listener.poll_events()
+        processed: list[dict[str, Any]] = []
+        for evt in events:
+            log.info(
+                "poll_now: real DataHub assertion failure detected | "
+                "event_id=%s source_urn=%s columns=%s",
+                evt.event_id,
+                evt.source_urn,
+                evt.columns,
+            )
+            decision, actions = _runner.run_episode(evt)
+            processed.append(
+                {
+                    "event_id": evt.event_id,
+                    "source_urn": evt.source_urn,
+                    "halt_set": list(decision.evidence.containment.halt_set),
+                    "actions_generated": len(actions),
+                }
+            )
 
-    event_type = payload.get("event_type", "QUALITY_OBSERVATION")
-    raw_source = payload.get("source_urn")
-    if not raw_source or not isinstance(raw_source, str) or not raw_source.startswith("urn:li:"):
-        raise HTTPException(
-            status_code=400, detail="Missing or invalid source_urn in webhook payload"
-        )
-
-    source_urn = _resolve_urn(raw_source, _engine._context)
-
-    now_ts = int(datetime.datetime.now(datetime.UTC).timestamp())
-    event_id = payload.get("event_id", f"ev-wh-{now_ts}")
-    cols = payload.get("columns")
-
-    try:
-        evt = MetadataEvent(
-            event_id=event_id,
-            kind=EventKind.QUALITY_OBSERVATION
-            if event_type == "QUALITY_OBSERVATION"
-            else EventKind.SCHEMA_CHANGE,
-            source_urn=source_urn,
-            columns=frozenset(cols) if cols is not None else None,
-            payload=(),
-            occurred_at=datetime.datetime.now(datetime.UTC).isoformat(),
-        )
-    except ValidationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    decision, actions = _runner.run_episode(evt)
-
-    return {
-        "status": "processed",
-        "event_id": event_id,
-        "halt_set": list(decision.evidence.containment.halt_set),
-        "actions_generated": len(actions),
-    }
+    return {"status": "POLLED", "episodes_processed": len(processed), "episodes": processed}
 
 
 @app.get("/q/audit")

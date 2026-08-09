@@ -3,7 +3,14 @@ from __future__ import annotations
 from kronika.data_context import DataContext
 from kronika.dimensions import Dimension, StatusLevel, top
 from kronika.ports import KRONIKA_MAX_ASSET_COUNT, DataHubReader
-from kronika.types import DataAsset, EdgeKind, LineageEdge, PolicyRule, ValidationError
+from kronika.types import (
+    ColumnLineage,
+    DataAsset,
+    EdgeKind,
+    LineageEdge,
+    PolicyRule,
+    ValidationError,
+)
 
 
 class ContextLimitExceededError(Exception):
@@ -58,10 +65,18 @@ def build_context(reader: DataHubReader, max_size: int = KRONIKA_MAX_ASSET_COUNT
         except ValueError:
             kind = EdgeKind.IDENTITY
 
-        raw_cols = e.get("columns")
-        cols = frozenset(str(c) for c in raw_cols) if raw_cols is not None else None
+        raw_column_lineage = e.get("column_lineage")
+        column_lineage = None
+        if raw_column_lineage is not None:
+            column_lineage = frozenset(
+                ColumnLineage(
+                    dst_column=str(m["dst_column"]),
+                    src_columns=frozenset(str(c) for c in m["src_columns"]),
+                )
+                for m in raw_column_lineage
+            )
 
-        edges.append(LineageEdge(src=src, dst=dst, kind=kind, columns=cols))
+        edges.append(LineageEdge(src=src, dst=dst, kind=kind, column_lineage=column_lineage))
 
     raw_rules = reader.list_policy_rules()
     rules: list[PolicyRule] = []

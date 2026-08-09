@@ -99,11 +99,23 @@ class DataAsset:
 
 
 @dataclass(frozen=True)
+class ColumnLineage:
+    dst_column: str
+    src_columns: frozenset[str]
+
+    def __post_init__(self) -> None:
+        if not self.dst_column:
+            raise ValidationError("column_lineage.dst_column", "empty_name")
+        if not self.src_columns:
+            raise ValidationError("column_lineage.src_columns", "empty_set")
+
+
+@dataclass(frozen=True)
 class LineageEdge:
     src: str
     dst: str
     kind: EdgeKind
-    columns: frozenset[str] | None
+    column_lineage: frozenset[ColumnLineage] | None
 
     def __post_init__(self) -> None:
         _require_urn(self.src, "edge.src")

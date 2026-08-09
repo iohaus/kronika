@@ -8,11 +8,15 @@ log = logging.getLogger("kronika.application.llm")
 
 
 class LocalLLMAdapter(LLMAdapter):
-    def explain(self, evidence: EvidenceRecord, audience: str = "ENGINEER") -> str:
+    """Hand-written templated text — always reports itself as `degraded=True`,
+    since by definition it is not a real model call, regardless of quality."""
+
+    def explain(self, evidence: EvidenceRecord, audience: str = "ENGINEER") -> tuple[str, bool]:
         if not evidence.outcomes:
             return (
                 f"[{audience.upper()} ASSESSMENT] All monitored data assets remain nominal. "
-                "No pipeline containment actions or active mitigations are currently required."
+                "No pipeline containment actions or active mitigations are currently required.",
+                True,
             )
 
         halted = [
@@ -36,7 +40,8 @@ class LocalLLMAdapter(LLMAdapter):
                 "To protect downstream financial and operational reporting, Kronika calculated "
                 f"a minimal vertex cut and recommends containment for {len(halted)} asset(s): "
                 f"{halt_str}.\n"
-                "Unaffected business domains remain fully operational under active monitoring."
+                "Unaffected business domains remain fully operational under active monitoring.",
+                True,
             )
 
         if audience.upper() == "OWNER":
@@ -46,7 +51,8 @@ class LocalLLMAdapter(LLMAdapter):
                 f"on '{evidence.source_urn}'. Kronika's decision engine evaluated downstream "
                 f"lineage impact and flagged assets for containment: {halt_str}.\n"
                 f"Assets operating under telemetry monitoring: {mon_str}.\n"
-                "Please review the pending action queue to approve or override the plan."
+                "Please review the pending action queue to approve or override the plan.",
+                True,
             )
 
         details: list[str] = []
@@ -63,7 +69,8 @@ class LocalLLMAdapter(LLMAdapter):
             f"Kronika decision engine evaluated Event '{evidence.event_id}' from source "
             f"'{evidence.source_urn}' occurred at {evidence.occurred_at}.\n"
             f"Containment Objective: {evidence.containment.objective}\n\n"
-            "Detailed Asset Impact Breakdown:\n" + "\n".join(details)
+            "Detailed Asset Impact Breakdown:\n" + "\n".join(details),
+            True,
         )
 
 
@@ -81,7 +88,7 @@ class OpenAILLMAdapter(LLMAdapter):
         self.timeout = timeout
         self._fallback = LocalLLMAdapter()
 
-    def explain(self, evidence: EvidenceRecord, audience: str = "ENGINEER") -> str:
+    def explain(self, evidence: EvidenceRecord, audience: str = "ENGINEER") -> tuple[str, bool]:
         if not self.api_key:
             return self._fallback.explain(evidence, audience)
 
@@ -123,7 +130,9 @@ class OpenAILLMAdapter(LLMAdapter):
                 temperature=0.2,
             )
             content = resp.choices[0].message.content
-            return content.strip() if content else self._fallback.explain(evidence, audience)
+            if content:
+                return content.strip(), False
+            return self._fallback.explain(evidence, audience)
         except Exception as exc:
             log.warning("OpenAILLMAdapter error, falling back to LocalLLMAdapter: %s", exc)
             return self._fallback.explain(evidence, audience)

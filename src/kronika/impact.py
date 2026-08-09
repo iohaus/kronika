@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from kronika.data_context import DataContext
 from kronika.dimensions import Dimension, StatusLevel, lower_by_one, worse_of
-from kronika.types import DataAsset, EdgeKind, EventKind, MetadataEvent
+from kronika.types import ColumnLineage, DataAsset, EdgeKind, EventKind, MetadataEvent
 
 _CRITICAL = StatusLevel.CRITICAL
 _DEGRADED = StatusLevel.DEGRADED
@@ -49,13 +49,38 @@ _PROP_MODES: dict[tuple[Dimension, EdgeKind], str] = {
 }
 
 
-def _column_relevant(
-    src_columns: frozenset[str] | None,
-    edge_columns: frozenset[str] | None,
-) -> bool:
-    if edge_columns is None or src_columns is None:
-        return True
-    return bool(src_columns & edge_columns)
+def _translate_columns(
+    upstream_active: frozenset[str] | None,
+    column_lineage: frozenset[ColumnLineage] | None,
+) -> frozenset[str] | None:
+    """Translate an upstream node's implicated-column set through one edge's real
+    column lineage into the downstream node's column namespace.
+
+    - `None` = unknown / all columns potentially implicated. Absorbing on the
+      unknown side: once unknown, stays unknown.
+    - `frozenset()` = proven zero columns implicated upstream. Never widened by a
+      missing edge mapping — if nothing relevant reached the source side of this
+      edge, no unmapped transform can manufacture relevance out of nothing.
+    - Otherwise: real intersection-based translation via the edge's authored
+      column-to-column mapping.
+    - An edge with no authored `column_lineage` at all, when the upstream side has
+      something relevant, conservatively widens to unknown (`None`) rather than
+      silently narrowing — a missing mapping can only ever produce an over-cautious
+      MONITOR/HALT, never a false CLEAR.
+    """
+    if upstream_active is None:
+        return None
+    if not upstream_active:
+        return frozenset()
+    if column_lineage is None:
+        return None
+    return frozenset(
+        mapping.dst_column for mapping in column_lineage if mapping.src_columns & upstream_active
+    )
+
+
+def _column_relevant(translated: frozenset[str] | None) -> bool:
+    return translated is None or bool(translated)
 
 
 def _propagate_one_dim(
@@ -63,15 +88,14 @@ def _propagate_one_dim(
     edge_kind: EdgeKind,
     upstream: StatusLevel,
     current: StatusLevel,
-    src_columns: frozenset[str] | None,
-    edge_columns: frozenset[str] | None,
+    translated_columns: frozenset[str] | None,
 ) -> StatusLevel | object:
     mode = _PROP_MODES.get((dim, edge_kind))
     if mode is None or mode == "no_prop" or mode == "recheck":
         return _NO_CHANGE
 
     if mode == "col_filter":
-        if not _column_relevant(src_columns, edge_columns):
+        if not _column_relevant(translated_columns):
             return _NO_CHANGE
         return worse_of(current, upstream)
 
@@ -179,6 +203,7 @@ class ImpactEngine:
 
         working: dict[str, DataAsset] = {source_urn: source_after}
         evidence_paths: dict[str, tuple[str, ...]] = {source_urn: (source_urn,)}
+        active_columns: dict[str, frozenset[str] | None] = {source_urn: event.columns}
 
         ready: list[str] = sorted(urn for urn, deg in in_degree.items() if deg == 0)
 
@@ -188,11 +213,15 @@ class ImpactEngine:
             if urn != source_urn:
                 updated = context.asset(urn)
                 best_path: tuple[str, ...] = (urn,)
+                node_columns: frozenset[str] | None = frozenset()
 
                 for edge in context.edges_to(urn):
                     if edge.src not in reachable:
                         continue
                     upstream = working.get(edge.src, context.asset(edge.src))
+                    translated = _translate_columns(
+                        active_columns.get(edge.src), edge.column_lineage
+                    )
 
                     for dim in Dimension:
                         new_level = _propagate_one_dim(
@@ -200,11 +229,16 @@ class ImpactEngine:
                             edge.kind,
                             upstream.get_status(dim),
                             updated.get_status(dim),
-                            event.columns,
-                            edge.columns,
+                            translated,
                         )
                         if isinstance(new_level, StatusLevel):
                             updated = updated.with_status(dim, new_level)
+
+                    node_columns = (
+                        None
+                        if (node_columns is None or translated is None)
+                        else node_columns | translated
+                    )
 
                     src_path = evidence_paths.get(edge.src)
                     if src_path and len(src_path) + 1 > len(best_path):
@@ -212,6 +246,7 @@ class ImpactEngine:
 
                 working[urn] = updated
                 evidence_paths[urn] = best_path
+                active_columns[urn] = node_columns
 
             for edge in context.edges_from(urn):
                 if edge.dst in reachable:

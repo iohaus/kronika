@@ -154,7 +154,9 @@ class ConsoleBridge(QObject):
 
         # Build edge representations
         for edge in self._engine._context._edges:
-            cols = list(edge.columns) if edge.columns else []
+            cols = (
+                sorted({m.dst_column for m in edge.column_lineage}) if edge.column_lineage else []
+            )
             self._edges.append(
                 {
                     "src": edge.src,
@@ -277,7 +279,7 @@ class ConsoleBridge(QObject):
 
         self._system_status = "CONTAINED" if halt_set else "HEALTHY"
 
-        rationale = self._llm.explain(decision.evidence, audience="EXECUTIVE")
+        rationale, rationale_degraded = self._llm.explain(decision.evidence, audience="EXECUTIVE")
 
         self._current_episode = {
             "event_id": event_id,
@@ -287,6 +289,7 @@ class ConsoleBridge(QObject):
             "halt_set": halt_set,
             "outcomes": outcomes_map,
             "rationale": rationale,
+            "rationale_degraded": rationale_degraded,
             "confidence": 0.98,
             "evidence_path": evidence_path,
             "deliberation_steps": [

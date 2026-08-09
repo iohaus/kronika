@@ -13,13 +13,14 @@ class Settings:
     datahub_timeout_seconds: float = _DATAHUB_HTTP_TIMEOUT_SECONDS_DEFAULT
     duckdb_path: str = os.getenv("DUCKDB_PATH", ":memory:")
     openai_api_key: str | None = os.getenv("OPENAI_API_KEY", None)
-    openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4o")
+    openai_model: str = os.getenv("OPENAI_MODEL", "openai.gpt-oss-120b")
     openai_base_url: str | None = os.getenv("OPENAI_BASE_URL", None)
     llm_timeout_seconds: float = float(os.getenv("KRONIKA_LLM_TIMEOUT_SECONDS", "30.0"))
     poll_interval_seconds: float = float(os.getenv("KRONIKA_POLL_INTERVAL_SECONDS", "60.0"))
     max_world_size: int = int(os.getenv("KRONIKA_MAX_WORLD_SIZE", "10000"))
     confidence_threshold: float = float(os.getenv("KRONIKA_CONFIDENCE_THRESHOLD", "0.90"))
     writer_mock_mode: bool = os.getenv("KRONIKA_WRITER_MOCK_MODE", "false").lower() == "true"
+    enable_background_polling: bool = os.getenv("KRONIKA_ENABLE_POLLING", "true").lower() == "true"
 
 
 settings = Settings()

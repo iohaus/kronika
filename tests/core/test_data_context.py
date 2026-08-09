@@ -6,7 +6,14 @@ from hypothesis import strategies as st
 
 from kronika.data_context import DataContext
 from kronika.dimensions import Dimension, StatusLevel
-from kronika.types import DataAsset, EdgeKind, LineageEdge, PolicyRule, ValidationError
+from kronika.types import (
+    ColumnLineage,
+    DataAsset,
+    EdgeKind,
+    LineageEdge,
+    PolicyRule,
+    ValidationError,
+)
 
 _P = "urn:li:dataPlatform:hive"
 
@@ -20,12 +27,22 @@ _URN_B = _urn("staging_patients")
 _URN_C = _urn("mart_billing")
 _URN_D = _urn("mart_demographics")
 
-_EDGE_AB = LineageEdge(src=_URN_A, dst=_URN_B, kind=EdgeKind.IDENTITY, columns=None)
+_EDGE_AB = LineageEdge(src=_URN_A, dst=_URN_B, kind=EdgeKind.IDENTITY, column_lineage=None)
 _EDGE_BC = LineageEdge(
-    src=_URN_B, dst=_URN_C, kind=EdgeKind.PROJECTION, columns=frozenset({"billing_amount"})
+    src=_URN_B,
+    dst=_URN_C,
+    kind=EdgeKind.PROJECTION,
+    column_lineage=frozenset(
+        {ColumnLineage(dst_column="billing_amount", src_columns=frozenset({"billing_amount"}))}
+    ),
 )
 _EDGE_BD = LineageEdge(
-    src=_URN_B, dst=_URN_D, kind=EdgeKind.PROJECTION, columns=frozenset({"patient_id"})
+    src=_URN_B,
+    dst=_URN_D,
+    kind=EdgeKind.PROJECTION,
+    column_lineage=frozenset(
+        {ColumnLineage(dst_column="patient_id", src_columns=frozenset({"patient_id"}))}
+    ),
 )
 
 

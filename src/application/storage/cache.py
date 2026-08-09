@@ -15,6 +15,7 @@ class DuckDBEvidenceStore(EvidenceStore):
         self.db_path = db_path
         self._memory_evidence: dict[str, EvidenceRecord] = {}
         self._memory_pending: dict[str, dict[str, Any]] = {}
+        self._memory_explanations: dict[str, dict[str, dict[str, Any]]] = {}
         self._use_duckdb = False
 
         if db_path != ":memory:":
@@ -54,6 +55,15 @@ class DuckDBEvidenceStore(EvidenceStore):
                 rationale VARCHAR,
                 requires_human_approval BOOLEAN,
                 status VARCHAR
+            );
+        """)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS llm_explanations (
+                event_id VARCHAR,
+                audience VARCHAR,
+                text VARCHAR,
+                degraded BOOLEAN,
+                PRIMARY KEY (event_id, audience)
             );
         """)
 
@@ -190,6 +200,25 @@ class DuckDBEvidenceStore(EvidenceStore):
                 "store.resolve_pending_action: DuckDB update complete | action_id=%s", target_id
             )
         return record
+
+    def save_explanation(self, event_id: str, audience: str, text: str, degraded: bool) -> None:
+        record = {"text": text, "degraded": degraded}
+        self._memory_explanations.setdefault(event_id, {})[audience] = record
+        log.debug(
+            "store.save_explanation: saved | event_id=%s audience=%s degraded=%s",
+            event_id,
+            audience,
+            degraded,
+        )
+
+        if self._use_duckdb:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO llm_explanations VALUES (?, ?, ?, ?)",
+                [event_id, audience, text, degraded],
+            )
+
+    def load_explanations(self, event_id: str) -> dict[str, dict[str, Any]]:
+        return self._memory_explanations.get(event_id, {})
 
     def resolve_all_pending_actions(self, status: str) -> list[dict[str, Any]]:
         pending = [r for r in self._memory_pending.values() if r.get("status") == "PENDING"]

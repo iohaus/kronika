@@ -4,6 +4,7 @@ import pytest
 
 from kronika.dimensions import Dimension, StatusLevel
 from kronika.types import (
+    ColumnLineage,
     DataAsset,
     EdgeKind,
     EventKind,
@@ -92,34 +93,76 @@ class TestDataAsset:
             asset.urn = "urn:li:dataset:(urn:li:dataPlatform:hive,other,PROD)"  # type: ignore[misc]
 
 
+class TestColumnLineage:
+    def test_valid_mapping(self) -> None:
+        mapping = ColumnLineage(dst_column="gender", src_columns=frozenset({"gender_clean"}))
+        assert mapping.dst_column == "gender"
+        assert "gender_clean" in mapping.src_columns
+
+    def test_empty_dst_column_raises(self) -> None:
+        with pytest.raises(ValidationError) as exc_info:
+            ColumnLineage(dst_column="", src_columns=frozenset({"x"}))
+        assert exc_info.value.field == "column_lineage.dst_column"
+
+    def test_empty_src_columns_raises(self) -> None:
+        with pytest.raises(ValidationError) as exc_info:
+            ColumnLineage(dst_column="x", src_columns=frozenset())
+        assert exc_info.value.field == "column_lineage.src_columns"
+
+    def test_hashable(self) -> None:
+        m1 = ColumnLineage(dst_column="x", src_columns=frozenset({"a"}))
+        m2 = ColumnLineage(dst_column="x", src_columns=frozenset({"a"}))
+        assert m1 == m2
+        assert hash(m1) == hash(m2)
+
+
 class TestLineageEdge:
     def test_valid_edge(self) -> None:
-        edge = LineageEdge(src=_URN_A, dst=_URN_B, kind=EdgeKind.IDENTITY, columns=None)
+        edge = LineageEdge(src=_URN_A, dst=_URN_B, kind=EdgeKind.IDENTITY, column_lineage=None)
         assert edge.src == _URN_A
-        assert edge.columns is None
+        assert edge.column_lineage is None
 
     def test_column_level_edge(self) -> None:
         edge = LineageEdge(
             src=_URN_A,
             dst=_URN_B,
             kind=EdgeKind.PROJECTION,
-            columns=frozenset({"billing_amount"}),
+            column_lineage=frozenset(
+                {
+                    ColumnLineage(
+                        dst_column="billing_amount", src_columns=frozenset({"billing_amount"})
+                    )
+                }
+            ),
         )
-        assert "billing_amount" in edge.columns  # type: ignore[operator]
+        assert any(m.dst_column == "billing_amount" for m in edge.column_lineage)  # type: ignore[union-attr]
+
+    def test_renamed_column_mapping(self) -> None:
+        edge = LineageEdge(
+            src=_URN_A,
+            dst=_URN_B,
+            kind=EdgeKind.PROJECTION,
+            column_lineage=frozenset(
+                {ColumnLineage(dst_column="gender", src_columns=frozenset({"gender_clean"}))}
+            ),
+        )
+        mapping = next(iter(edge.column_lineage))  # type: ignore[arg-type]
+        assert mapping.dst_column == "gender"
+        assert mapping.src_columns == frozenset({"gender_clean"})
 
     def test_self_loop_raises(self) -> None:
         with pytest.raises(ValidationError) as exc_info:
-            LineageEdge(src=_URN_A, dst=_URN_A, kind=EdgeKind.IDENTITY, columns=None)
+            LineageEdge(src=_URN_A, dst=_URN_A, kind=EdgeKind.IDENTITY, column_lineage=None)
         assert exc_info.value.code == "self_loop"
 
     def test_invalid_src_raises(self) -> None:
         with pytest.raises(ValidationError) as exc_info:
-            LineageEdge(src="bad", dst=_URN_B, kind=EdgeKind.IDENTITY, columns=None)
+            LineageEdge(src="bad", dst=_URN_B, kind=EdgeKind.IDENTITY, column_lineage=None)
         assert exc_info.value.field == "edge.src"
 
     def test_hashable(self) -> None:
-        e1 = LineageEdge(src=_URN_A, dst=_URN_B, kind=EdgeKind.IDENTITY, columns=None)
-        e2 = LineageEdge(src=_URN_A, dst=_URN_B, kind=EdgeKind.IDENTITY, columns=None)
+        e1 = LineageEdge(src=_URN_A, dst=_URN_B, kind=EdgeKind.IDENTITY, column_lineage=None)
+        e2 = LineageEdge(src=_URN_A, dst=_URN_B, kind=EdgeKind.IDENTITY, column_lineage=None)
         assert e1 == e2
         assert hash(e1) == hash(e2)
 

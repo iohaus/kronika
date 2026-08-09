@@ -41,15 +41,18 @@ class TestLocalLLMAdapter:
         evidence = assemble(evt, impact, rule_res, consumer_counts={})
 
         adapter = LocalLLMAdapter()
-        eng_text = adapter.explain(evidence, "ENGINEER")
+        eng_text, eng_degraded = adapter.explain(evidence, "ENGINEER")
         assert "ENGINEERING DIAGNOSTIC REPORT:" in eng_text
         assert _urn("raw_patients") in eng_text
+        assert eng_degraded is True
 
-        owner_text = adapter.explain(evidence, "OWNER")
+        owner_text, owner_degraded = adapter.explain(evidence, "OWNER")
         assert "DATA OWNER NOTICE:" in owner_text
+        assert owner_degraded is True
 
-        exec_text = adapter.explain(evidence, "EXECUTIVE")
+        exec_text, exec_degraded = adapter.explain(evidence, "EXECUTIVE")
         assert "EXECUTIVE SUMMARY:" in exec_text
+        assert exec_degraded is True
 
     def test_explain_no_banned_vocabulary(self) -> None:
         banned = [
@@ -79,7 +82,8 @@ class TestLocalLLMAdapter:
         evidence = assemble(evt, impact, rule_res, consumer_counts={})
 
         adapter = LocalLLMAdapter()
-        text = adapter.explain(evidence, "ENGINEER").lower()
+        text, _degraded = adapter.explain(evidence, "ENGINEER")
+        text = text.lower()
         for term in banned:
             assert term not in text, f"LLM output contains spec term '{term}'"
 

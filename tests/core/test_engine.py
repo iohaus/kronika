@@ -4,7 +4,15 @@ from kronika.data_context import DataContext
 from kronika.dimensions import Dimension
 from kronika.engine import PublicEngine
 from kronika.evidence import Recommendation
-from kronika.types import DataAsset, EdgeKind, EventKind, LineageEdge, MetadataEvent, PolicyRule
+from kronika.types import (
+    ColumnLineage,
+    DataAsset,
+    EdgeKind,
+    EventKind,
+    LineageEdge,
+    MetadataEvent,
+    PolicyRule,
+)
 
 _P = "urn:li:dataPlatform:hive"
 
@@ -19,6 +27,11 @@ def _asset(name: str, *, tags: frozenset[str] | None = None, owner: str | None =
 
 def _edge(src: str, dst: str) -> LineageEdge:
     return LineageEdge(_urn(src), _urn(dst), EdgeKind.IDENTITY, None)
+
+
+def _col(*names: str) -> frozenset[ColumnLineage]:
+    """Self-mapping column lineage — same column name(s) upstream and downstream."""
+    return frozenset(ColumnLineage(dst_column=n, src_columns=frozenset({n})) for n in names)
 
 
 _OWNER_URN = "urn:li:corpuser:clinical_team"
@@ -46,11 +59,14 @@ def _healthcare_context() -> DataContext:
             _asset("mart_demographics", tags=frozenset({"internal"}), owner=_OWNER_URN),
         ],
         edges=[
-            LineageEdge(_URN_RAW, _URN_STAGING, EdgeKind.IDENTITY, None),
             LineageEdge(
-                _URN_STAGING, _URN_BILLING, EdgeKind.PROJECTION, frozenset({"billing_amount"})
+                _URN_RAW,
+                _URN_STAGING,
+                EdgeKind.IDENTITY,
+                _col("billing_amount", "patient_id"),
             ),
-            LineageEdge(_URN_STAGING, _URN_DEMO, EdgeKind.PROJECTION, frozenset({"patient_id"})),
+            LineageEdge(_URN_STAGING, _URN_BILLING, EdgeKind.PROJECTION, _col("billing_amount")),
+            LineageEdge(_URN_STAGING, _URN_DEMO, EdgeKind.PROJECTION, _col("patient_id")),
         ],
         rules=[
             PolicyRule(
