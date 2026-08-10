@@ -107,6 +107,48 @@ class TestEventListener:
         pending = store.list_pending_actions()
         assert any(p["kind"] == "HALT_PIPELINE" for p in pending)
 
+    def test_governance_action_writes_incident_on_approve(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression: RAISE_GOVERNANCE_INCIDENT actions previously had no execution
+        handler in the approval endpoints — approving one silently dropped it with
+        no DataHub write. See kronika.doc/demo_script.md log-consistency findings,
+        2026-08-10."""
+        import application.main as main_module
+
+        seed = get_healthcare_dataset()
+        reader = HttpDataHubReader(mock_data=seed)
+        writer = HttpDataHubWriter(mock_mode=True)
+        store = DuckDBEvidenceStore(":memory:")
+        engine = PublicEngine()
+        runner = DecisionEpisodeRunner(engine, reader, writer, store)
+
+        event = MetadataEvent(
+            event_id="evt-governance-100",
+            kind=EventKind.QUALITY_OBSERVATION,
+            source_urn=_urn("raw_patients"),
+            columns=frozenset({"billing_amount"}),
+            payload=(),
+            occurred_at="2026-07-25T18:00:00Z",
+        )
+        _decision, actions = runner.run_episode(event)
+        governance_actions = [a for a in actions if a.kind == "RAISE_GOVERNANCE_INCIDENT"]
+        assert governance_actions, (
+            "fixture's pii_must_have_owner violation on raw_patients should have "
+            "produced a RAISE_GOVERNANCE_INCIDENT action"
+        )
+        assert not writer.incidents_written
+
+        monkeypatch.setattr(main_module, "_store", store)
+        monkeypatch.setattr(main_module, "_writer", writer)
+        client = TestClient(main_module.app)
+
+        resp = client.post("/q/pending/approve-all")
+        assert resp.status_code == 200
+
+        written_urns = {inc["urn"] for inc in writer.incidents_written}
+        assert governance_actions[0].target_urn in written_urns
+
 
 class TestProductAPIEndpoints:
     def test_get_status(self, test_client: TestClient) -> None:

@@ -79,6 +79,10 @@ class DuckDBEvidenceStore(EvidenceStore):
             "event_id": evidence.event_id,
             "occurred_at": evidence.occurred_at,
             "source_urn": evidence.source_urn,
+            "trigger_columns": (
+                sorted(evidence.trigger_columns) if evidence.trigger_columns else None
+            ),
+            "trigger_detail": evidence.trigger_detail,
             "outcomes": {
                 urn: {
                     "urn": o.urn,

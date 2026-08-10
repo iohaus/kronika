@@ -54,6 +54,54 @@ class TestLocalLLMAdapter:
         assert "EXECUTIVE SUMMARY:" in exec_text
         assert exec_degraded is True
 
+    def test_evidence_carries_real_trigger_no_fabrication(self) -> None:
+        """Regression: EvidenceRecord/LLM prompts must be grounded in the real
+        event (column + assertion detail), never left to the model to invent.
+        See kronika.doc/demo_script.md log-consistency findings, 2026-08-10."""
+        seed = get_healthcare_dataset()
+        ctx = build_context(HttpDataHubReader(mock_data=seed))
+        evt = MetadataEvent(
+            event_id="evt-llm-003",
+            kind=EventKind.QUALITY_OBSERVATION,
+            source_urn=_urn("raw_patients"),
+            columns=frozenset({"billing_amount"}),
+            payload=(
+                ("severity", "critical"),
+                ("detail", "Billing amount must never be negative — billing_amount < 0"),
+            ),
+            occurred_at="2026-07-25T20:00:00Z",
+        )
+        engine = ImpactEngine()
+        rules = RuleEngine()
+        after_ctx, impact = engine.analyze(ctx, evt)
+        rule_res = rules.evaluate_all(after_ctx)
+        evidence = assemble(evt, impact, rule_res, consumer_counts={})
+
+        assert evidence.trigger_columns == frozenset({"billing_amount"})
+        assert evidence.trigger_detail is not None
+        assert "billing_amount < 0" in evidence.trigger_detail
+
+        text, _degraded = LocalLLMAdapter().explain(evidence, "ENGINEER")
+        assert "billing_amount < 0" in text
+
+        # An event with no assertion detail must say so plainly, not invent one.
+        evt_bare = MetadataEvent(
+            event_id="evt-llm-004",
+            kind=EventKind.QUALITY_OBSERVATION,
+            source_urn=_urn("raw_patients"),
+            columns=None,
+            payload=(),
+            occurred_at="2026-07-25T20:00:00Z",
+        )
+        after_ctx2, impact2 = engine.analyze(ctx, evt_bare)
+        rule_res2 = rules.evaluate_all(after_ctx2)
+        evidence_bare = assemble(evt_bare, impact2, rule_res2, consumer_counts={})
+        assert evidence_bare.trigger_columns is None
+        assert evidence_bare.trigger_detail is None
+
+        bare_text, _ = LocalLLMAdapter().explain(evidence_bare, "ENGINEER")
+        assert "not reported" in bare_text.lower() or "unspecified" in bare_text.lower()
+
     def test_explain_no_banned_vocabulary(self) -> None:
         banned = [
             "sste",

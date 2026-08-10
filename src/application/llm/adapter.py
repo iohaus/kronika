@@ -30,12 +30,22 @@ class LocalLLMAdapter(LLMAdapter):
 
         halt_str = ", ".join(f"'{u}'" for u in halted) if halted else "none"
         mon_str = ", ".join(f"'{u}'" for u in monitored) if monitored else "none"
+        trigger_str = (
+            f"column(s) {', '.join(sorted(evidence.trigger_columns))}"
+            if evidence.trigger_columns
+            else "an unspecified column"
+        )
+        detail_str = (
+            f" ({evidence.trigger_detail})"
+            if evidence.trigger_detail
+            else " (no further detail reported)"
+        )
 
         if audience.upper() == "EXECUTIVE":
             return (
                 "EXECUTIVE SUMMARY:\n"
-                f"A critical data quality anomaly was detected from source dataset "
-                f"'{evidence.source_urn}' at {evidence.occurred_at}.\n"
+                f"A data quality anomaly was detected on {trigger_str} of source dataset "
+                f"'{evidence.source_urn}' at {evidence.occurred_at}{detail_str}.\n"
                 f"Event ID: {evidence.event_id}\n"
                 "To protect downstream financial and operational reporting, Kronika calculated "
                 f"a minimal vertex cut and recommends containment for {len(halted)} asset(s): "
@@ -48,8 +58,9 @@ class LocalLLMAdapter(LLMAdapter):
             return (
                 "DATA OWNER NOTICE:\n"
                 f"An upstream quality observation event (ID: {evidence.event_id}) occurred "
-                f"on '{evidence.source_urn}'. Kronika's decision engine evaluated downstream "
-                f"lineage impact and flagged assets for containment: {halt_str}.\n"
+                f"on '{evidence.source_urn}', affecting {trigger_str}{detail_str}. Kronika's "
+                "decision engine evaluated downstream lineage impact and flagged assets for "
+                f"containment: {halt_str}.\n"
                 f"Assets operating under telemetry monitoring: {mon_str}.\n"
                 "Please review the pending action queue to approve or override the plan.",
                 True,
@@ -67,7 +78,8 @@ class LocalLLMAdapter(LLMAdapter):
         return (
             "ENGINEERING DIAGNOSTIC REPORT:\n"
             f"Kronika decision engine evaluated Event '{evidence.event_id}' from source "
-            f"'{evidence.source_urn}' occurred at {evidence.occurred_at}.\n"
+            f"'{evidence.source_urn}' occurred at {evidence.occurred_at}, triggered by "
+            f"{trigger_str}{detail_str}.\n"
             f"Containment Objective: {evidence.containment.objective}\n\n"
             "Detailed Asset Impact Breakdown:\n" + "\n".join(details),
             True,
@@ -100,6 +112,14 @@ class OpenAILLMAdapter(LLMAdapter):
                 base_url=self.base_url or None,
                 timeout=self.timeout,
             )
+            trigger_cols = (
+                ", ".join(sorted(evidence.trigger_columns))
+                if evidence.trigger_columns
+                else "unknown (not reported by the source event)"
+            )
+            trigger_detail = (
+                evidence.trigger_detail or "no further detail was reported by the source event"
+            )
             prompt = (
                 "You are Kronika, an autonomous data-quality decision agent for DataHub. "
                 "Your task is to explain, in clear and cohesive prose, what happened in "
@@ -107,11 +127,16 @@ class OpenAILLMAdapter(LLMAdapter):
                 f"Write for a {audience.upper()} audience: be precise but avoid "
                 "unnecessary jargon. Focus on the decision logic, the evidence you "
                 "used, and the implications of your recommendation. Do not use bullet "
-                "points or section headings; produce a single, flowing narrative.\n\n"
+                "points or section headings; produce a single, flowing narrative. "
+                "Only state facts given in the event context below — never invent a "
+                "root cause, metric, or column that isn't listed here; if a detail "
+                "isn't provided, say plainly that it wasn't reported.\n\n"
                 "Event context:\n"
                 f"- Event ID: {evidence.event_id}\n"
                 f"- Source URN: {evidence.source_urn}\n"
                 f"- Occurred At: {evidence.occurred_at}\n"
+                f"- Triggering column(s): {trigger_cols}\n"
+                f"- Trigger detail (from the DataHub assertion, if any): {trigger_detail}\n"
                 f"- Halt Set: {list(evidence.containment.halt_set)}\n"
                 f"- Objective: {evidence.containment.objective}\n"
                 "- Outcomes: "

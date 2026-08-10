@@ -123,6 +123,8 @@ def get_episode(event_id: str) -> dict[str, Any]:
         "event_id": ev.event_id,
         "occurred_at": ev.occurred_at,
         "source_urn": ev.source_urn,
+        "trigger_columns": sorted(ev.trigger_columns) if ev.trigger_columns else None,
+        "trigger_detail": ev.trigger_detail,
         "outcomes": {
             urn: {
                 "urn": o.urn,
@@ -264,6 +266,21 @@ def approve_all_pending_actions() -> dict[str, Any]:
                 tag_urn="urn:li:tag:critical",
             )
             incidents_created += 1
+        elif resolved.get("kind") == "RAISE_GOVERNANCE_INCIDENT":
+            _writer.create_incident(
+                urn=resolved["target_urn"],
+                title=f"Approved Governance Violation: {resolved['action_id']}",
+                description=resolved["rationale"],
+                event_id=resolved["event_id"],
+            )
+            incidents_created += 1
+        else:
+            log.warning(
+                "approve_all_pending_actions: unhandled action kind — no DataHub write "
+                "performed | action_id=%s kind=%s",
+                resolved.get("action_id"),
+                resolved.get("kind"),
+            )
 
     return {
         "status": "APPROVED_ALL",
@@ -302,6 +319,20 @@ def approve_pending_action(action_id: str) -> dict[str, Any]:
         _writer.add_tag(
             urn=resolved["target_urn"],
             tag_urn="urn:li:tag:critical",
+        )
+    elif resolved["kind"] == "RAISE_GOVERNANCE_INCIDENT":
+        _writer.create_incident(
+            urn=resolved["target_urn"],
+            title=f"Approved Governance Violation: {action_id}",
+            description=resolved["rationale"],
+            event_id=resolved["event_id"],
+        )
+    else:
+        log.warning(
+            "approve_pending_action: unhandled action kind — no DataHub write performed "
+            "| action_id=%s kind=%s",
+            action_id,
+            resolved["kind"],
         )
     return resolved
 

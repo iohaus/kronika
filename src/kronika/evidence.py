@@ -46,6 +46,8 @@ class EvidenceRecord:
     event_id: str
     occurred_at: str
     source_urn: str
+    trigger_columns: frozenset[str] | None
+    trigger_detail: str | None
     outcomes: dict[str, AssetOutcome]
     containment: ContainmentPlan
 
@@ -141,6 +143,8 @@ def assemble(
         event_id=event.event_id,
         occurred_at=event.occurred_at,
         source_urn=event.source_urn,
+        trigger_columns=event.columns,
+        trigger_detail=event.payload_value("detail"),
         outcomes=outcomes,
         containment=containment,
     )

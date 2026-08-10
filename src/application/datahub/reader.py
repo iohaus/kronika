@@ -467,6 +467,7 @@ class HttpDataHubReader(DataHubReader):
                 )
 
                 column = assertion.get("column")
+                definition = assertion.get("definition") or {}
                 results.append(
                     {
                         "dataset_urn": dataset_urn,
@@ -474,6 +475,8 @@ class HttpDataHubReader(DataHubReader):
                         "occurred_at": occurred_at,
                         "columns": [column] if column else None,
                         "severity": "critical" if status == "FAILED" else "warning",
+                        "description": assertion.get("description"),
+                        "predicate": definition.get("logic"),
                     }
                 )
 

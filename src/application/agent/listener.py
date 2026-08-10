@@ -24,15 +24,29 @@ class EventListener:
             self._seen_events.add(dedup_key)
 
             cols = assertion.get("columns")
+            payload = [
+                ("severity", assertion.get("severity", "critical")),
+                ("source", "datahub_assertion"),
+            ]
+            detail_parts = [
+                part
+                for part in (
+                    assertion.get("description"),
+                    f"failing predicate: {assertion['predicate']}"
+                    if assertion.get("predicate")
+                    else None,
+                )
+                if part
+            ]
+            if detail_parts:
+                payload.append(("detail", " — ".join(detail_parts)))
+
             evt = MetadataEvent(
                 event_id=f"poll-{len(self._seen_events):04d}",
                 kind=EventKind.QUALITY_OBSERVATION,
                 source_urn=urn,
                 columns=frozenset(cols) if cols else None,
-                payload=(
-                    ("severity", assertion.get("severity", "critical")),
-                    ("source", "datahub_assertion"),
-                ),
+                payload=tuple(payload),
                 occurred_at=occurred_at,
             )
             events.append(evt)
